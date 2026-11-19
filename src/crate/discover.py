@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import default_presets
+from .config import PRESET_CANDIDATES, default_presets
 
 _PROJECT_DIR = re.compile(
     r"<UserLibrary>.*?<ProjectDir\s+Value=\"([^\"]+)\"",
@@ -60,19 +60,12 @@ def _first_dir(candidates: list[Path]) -> Path | None:
 
 
 def preset_map(user_library: Path | None) -> dict[str, str]:
-    """Spec defaults, with a real directory substituted when one is already there."""
+    """Usual install path for each synth, replaced when that folder is already on disk."""
     presets = default_presets()
-    serum = _first_dir(
-        [
-            Path("~/Library/Audio/Presets/Xfer Records/Serum Presets/Presets/User"),
-            Path("~/Library/Audio/Presets/Xfer Records/Serum Presets/User"),
-        ]
-    )
-    if serum is not None:
-        presets[".fxp"] = str(serum)
-    vital = _first_dir([Path("~/Music/Vital/User/Presets")])
-    if vital is not None:
-        presets[".vital"] = str(vital)
+    for key, candidates in PRESET_CANDIDATES.items():
+        found = _first_dir([Path(candidate) for candidate in candidates])
+        if found is not None:
+            presets[key] = str(found)
     if user_library is not None:
         presets[".adv"] = str(Path(user_library).expanduser() / "Presets")
         presets[".adg"] = str(Path(user_library).expanduser() / "Presets")

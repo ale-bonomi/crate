@@ -59,14 +59,34 @@ def expand_folder(folder: str, cfg: Config) -> str:
     return str(Path(folder).expanduser())
 
 
-def route_preset(path: Path, cfg: Config) -> Route | None:
+# Shared extensions. The first matching pack or folder name wins.
+# "serum" is also inside "serum2", so the longer hint has to come first.
+_HINTS: tuple[tuple[str, frozenset[str], tuple[str, ...]], ...] = (
+    (".fxp", frozenset({".fxp", ".fxb"}), ("serum 2", "serum2")),
+    ("sylenth1", frozenset({".fxp", ".fxb"}), ("sylenth",)),
+    ("dune", frozenset({".fxp", ".fxb"}), ("dune",)),
+    ("serum", frozenset({".fxp", ".fxb"}), ("serum",)),
+    ("diva", frozenset({".h2p"}), ("diva",)),
+    ("hive", frozenset({".h2p"}), ("hive",)),
+    ("zebra2", frozenset({".h2p"}), ("zebra",)),
+)
+
+
+def route_preset(path: Path, cfg: Config, folders: tuple[str, ...] = ()) -> Route | None:
     ext = path.suffix.lower()
-    dest = cfg.non_audio.presets.get(ext)
+    text = " ".join((*folders, path.stem)).lower()
+    dest: str | None = None
+    for key, extensions, hints in _HINTS:
+        if ext in extensions and any(hint in text for hint in hints):
+            dest = cfg.non_audio.presets.get(key)
+            break
+    if dest is None:
+        dest = cfg.non_audio.presets.get(ext)
     if dest is None:
         dest = cfg.non_audio.presets.get("unknown")
     if not dest or dest == "leave":
         return None
-    return Route(expand_folder(dest, cfg), f"preset/{ext.lstrip('.')}", 1.0)
+    return Route(expand_folder(dest, cfg), f"preset/{ext.lstrip('.') or 'preset'}", 1.0)
 
 
 def route_other(cfg: Config) -> Route | None:

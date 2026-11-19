@@ -54,14 +54,75 @@ class Taxonomy(BaseModel):
     loops: dict[str, Category] = Field(default_factory=_default_loops)
 
 
+# First path is the usual install. Later paths are tried only when a folder is already there.
+PRESET_CANDIDATES: dict[str, tuple[str, ...]] = {
+    ".fxp": (
+        "/Library/Audio/Presets/Xfer Records/Serum 2 Presets/Presets/User",
+        "~/Library/Audio/Presets/Xfer Records/Serum 2 Presets/Presets/User",
+        "/Library/Audio/Presets/Xfer Records/Serum Presets/Presets/User",
+        "~/Library/Audio/Presets/Xfer Records/Serum Presets/Presets/User",
+    ),
+    "serum": (
+        "/Library/Audio/Presets/Xfer Records/Serum Presets/Presets/User",
+        "~/Library/Audio/Presets/Xfer Records/Serum Presets/Presets/User",
+    ),
+    ".vital": ("~/Music/Vital/User/Presets",),
+    ".omnisphere": (
+        "~/Library/Application Support/Spectrasonics/STEAM/"
+        "Omnisphere/Settings Library/Patches/User",
+        "/Users/Shared/Spectrasonics/STEAM/Omnisphere/Settings Library/Patches/User",
+    ),
+    ".pig": (
+        "/Library/Arturia/Presets/Pigments/User",
+        "~/Library/Arturia/Presets/Pigments/User",
+    ),
+    ".pgtx": (
+        "/Library/Arturia/Presets/Pigments/User",
+        "~/Library/Arturia/Presets/Pigments/User",
+    ),
+    ".nmsv": (
+        "~/Documents/Native Instruments/Massive/Sounds",
+        "~/Library/Application Support/Native Instruments/Massive/Sounds",
+    ),
+    ".mxpreset": ("~/Documents/Native Instruments/User Content/Massive X/Presets",),
+    ".phaseplant": (
+        "~/Documents/Kilohearts/presets/Phase Plant/User Presets",
+        "~/Library/Audio/Presets/Kilohearts/Phase Plant",
+    ),
+    ".spf": (
+        "~/Library/Application Support/RevealSound/Presets",
+        "~/Documents/Reveal Sound/Presets",
+    ),
+    ".sbf": (
+        "~/Library/Application Support/RevealSound/Presets",
+        "~/Documents/Reveal Sound/Presets",
+    ),
+    "sylenth1": ("~/Library/Application Support/LennarDigital/Sylenth1/Presets",),
+    "dune": (
+        "~/Library/Application Support/Synapse Audio/DUNE 3/Presets",
+        "~/Documents/Synapse Audio/DUNE 3/Presets",
+    ),
+    "diva": (
+        "~/Library/Audio/Presets/u-he/Diva",
+        "/Library/Audio/Presets/u-he/Diva",
+    ),
+    "hive": (
+        "~/Library/Audio/Presets/u-he/Hive",
+        "/Library/Audio/Presets/u-he/Hive",
+    ),
+    "zebra2": (
+        "~/Library/Audio/Presets/u-he/Zebra2",
+        "/Library/Audio/Presets/u-he/Zebra2",
+    ),
+}
+
+
 def default_presets() -> dict[str, str]:
-    return {
-        ".fxp": "~/Library/Audio/Presets/Xfer Records/Serum Presets/User",
-        ".vital": "~/Music/Vital/User/Presets",
-        ".adv": "<Ableton User Library>/Presets",
-        ".adg": "<Ableton User Library>/Presets",
-        "unknown": "_Presets Unsorted",
-    }
+    presets = {key: paths[0] for key, paths in PRESET_CANDIDATES.items()}
+    presets[".adv"] = "<Ableton User Library>/Presets"
+    presets[".adg"] = "<Ableton User Library>/Presets"
+    presets["unknown"] = "_Presets Unsorted"
+    return presets
 
 
 class NonAudio(BaseModel):

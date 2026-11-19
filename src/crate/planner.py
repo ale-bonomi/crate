@@ -96,7 +96,7 @@ def sort_router(cfg: Config, verdicts: dict[int, Verdict] | None = None) -> Rout
         elif item.kind == "midi":
             r = route_midi(cfg)
         elif item.kind == "preset":
-            r = route_preset(item.path, cfg)
+            r = route_preset(item.path, cfg, item.folders)
         else:
             r = route_other(cfg)
         if r is None:

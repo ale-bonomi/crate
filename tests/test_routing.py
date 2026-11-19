@@ -58,9 +58,38 @@ def test_presets_and_midi_leave_audio_names(tmp_path: Path):
     plan = planner.build_plan(res.items, cfg, planner.sort_router(cfg), [], None, None)
     by_name = {op.src.name: op for op in plan.ops}
     assert by_name["bass.vital"].dst == vital / "bass.vital"
-    assert by_name["Lead.nmsv"].dst == lib / "_Presets Unsorted" / "Lead.nmsv"
+    massive = Path("~/Documents/Native Instruments/Massive/Sounds").expanduser()
+    assert by_name["Lead.nmsv"].dst == massive / "Lead.nmsv"
     assert by_name["chord.mid"].dst == lib / "MIDI" / "chord.mid"
     assert "notes.txt" not in by_name
+
+
+def test_shared_preset_extensions_follow_the_pack_name(tmp_path: Path):
+    lib = tmp_path / "lib"
+    inbox = tmp_path / "inbox"
+    (inbox / "Diva").mkdir(parents=True)
+    (inbox / "Hive 2").mkdir()
+    (inbox / "Sylenth1").mkdir()
+    (inbox / "Diva" / "Bass.h2p").write_bytes(b"diva")
+    (inbox / "Hive 2" / "Bass.h2p").write_bytes(b"hive")
+    (inbox / "Mystery.h2p").write_bytes(b"which")
+    (inbox / "Sylenth1" / "Lead.fxb").write_bytes(b"sylenth")
+    (inbox / "Banks" / "Lead.fxb").parent.mkdir()
+    (inbox / "Banks" / "Lead.fxb").write_bytes(b"bank")
+    cfg = Config(library_roots=[lib], keep_originals=False)
+    res = scan([inbox], tmp_path / "staging")
+    plan = planner.build_plan(res.items, cfg, planner.sort_router(cfg), [], None, None)
+    diva = next(op for op in plan.ops if op.src.parent.name == "Diva")
+    hive = next(op for op in plan.ops if op.src.parent.name == "Hive 2")
+    mystery = next(op for op in plan.ops if op.src.name == "Mystery.h2p")
+    sylenth = next(op for op in plan.ops if op.src.parent.name == "Sylenth1")
+    bank = next(op for op in plan.ops if op.src.parent.name == "Banks")
+    assert diva.dst == Path("~/Library/Audio/Presets/u-he/Diva").expanduser() / "Bass.h2p"
+    assert hive.dst == Path("~/Library/Audio/Presets/u-he/Hive").expanduser() / "Bass.h2p"
+    assert mystery.dst == lib / "_Presets Unsorted" / "Mystery.h2p"
+    sylenth_dir = Path("~/Library/Application Support/LennarDigital/Sylenth1/Presets").expanduser()
+    assert sylenth.dst == sylenth_dir / "Lead.fxb"
+    assert bank.dst == lib / "_Presets Unsorted" / "Lead.fxb"
 
 
 def test_other_folder_when_configured(tmp_path: Path):

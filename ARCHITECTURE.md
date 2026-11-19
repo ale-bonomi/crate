@@ -29,7 +29,7 @@ flowchart LR
 - `analyze/engine.py` — Parallel analysis. Features are cached in `analysis` by content hash, so a later rule change does not re-read the audio.
 - `taxonomy.py` — Maps a label onto the configured folder, at most `max_depth` levels. MIDI and presets use `non_audio` destinations, which may sit outside the library root.
 - `naming.py` — Opt-in filename template. Unknown tokens are omitted.
-- `discover.py` — Reads Ableton's `Library.cfg` and known plugin preset folders for `crate init`.
+- `discover.py` — Reads Ableton's `Library.cfg` and the usual preset folders for Serum, Vital, Omnisphere, Pigments, Massive, Massive X, Phase Plant, Spire, Sylenth1, Dune 3, and u-he. `crate init` lets you replace any path.
 - `planner.py` — Builds the from-to list. Copies out of the Splice folder when `keep_originals` is set. Splits a folder on punch, snare body, or feel only once it would pass `split_folder_threshold` (default 300). Exact duplicates follow `duplicates` (`trash`, `quarantine`, `keep`, `symlink`). Near-duplicates are notes, never deletions.
 - `mover.py` — Writes each operation to SQLite before it runs. Same-volume moves are renames. Cross-volume moves copy, check size and hash, then delete the source. `undo` walks the batch backward.
 - `search.py` — `find`, `where`, and similarity over the cached features.

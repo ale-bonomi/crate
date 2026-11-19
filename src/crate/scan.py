@@ -9,7 +9,22 @@ from pathlib import Path
 
 AUDIO_EXT = {".wav", ".aif", ".aiff", ".mp3", ".flac", ".ogg"}
 MIDI_EXT = {".mid", ".midi"}
-PRESET_EXT = {".fxp", ".fxb", ".vital", ".adv", ".adg", ".nmsv", ".h2p"}
+PRESET_EXT = {
+    ".fxp",
+    ".fxb",
+    ".vital",
+    ".adv",
+    ".adg",
+    ".nmsv",
+    ".h2p",
+    ".omnisphere",
+    ".pig",
+    ".pgtx",
+    ".mxpreset",
+    ".phaseplant",
+    ".spf",
+    ".sbf",
+}
 ARCHIVE_EXT = {".zip"}
 UNSUPPORTED_ARCHIVE_EXT = {".rar", ".7z"}
 JUNK_DIRS = {"__MACOSX"}

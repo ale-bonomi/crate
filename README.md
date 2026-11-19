@@ -77,7 +77,29 @@ Labels look like `kick`, `snare:tight`, `kick:punchy`, `loop:drums`, or `oneshot
 
 `watch` leaves files that are already in the Splice folder alone. `--backfill` ingests those too. `--menu` puts `12 filed, 3 need review` in the menu bar when the `mac` extra is installed.
 
-Every command that moves files is a dry run unless you pass `--apply`. Filenames stay as they are unless `rename.enabled` is true in the config. The template is `{type}_{character}_{key}_{bpm}_{original}`, and any token that is unknown is left out. `.asd` files move with their sample, including under a new name. MIDI goes to `MIDI/`. Presets go to the plugin folder confirmed in `crate init` (`.fxp`, `.vital`, `.adv`, `.adg`); anything else goes to `_Presets Unsorted/`. `reorganize` moves files already in the library and reuses cached analysis. It leaves `_Duplicates/` alone unless you pass that folder as `--section`.
+Every command that moves files is a dry run unless you pass `--apply`. Filenames stay as they are unless `rename.enabled` is true in the config. The template is `{type}_{character}_{key}_{bpm}_{original}`, and any token that is unknown is left out. `.asd` files move with their sample, including under a new name. MIDI goes to `MIDI/`.
+
+Presets go to the folder that synth normally uses. `crate init` detects a folder that is already there, otherwise it offers the usual path, and you can type a different one.
+
+| Files | Folder |
+| --- | --- |
+| `.fxp` | Serum 2 user presets, or Serum 1 if that is the install on disk |
+| `.fxp` / `.fxb` named Serum | Serum 1 user presets |
+| `.vital` | Vital user presets |
+| `.omnisphere` | Omnisphere user patches |
+| `.pig`, `.pgtx` | Pigments user presets |
+| `.nmsv` | Massive Sounds |
+| `.mxpreset` | Massive X user presets |
+| `.phaseplant` | Phase Plant user presets |
+| `.fxp` / `.fxb` named Sylenth | Sylenth1 presets |
+| `.spf`, `.sbf` | Spire user presets |
+| `.h2p` named Diva, Hive, or Zebra | that u-he synth's user presets |
+| `.fxp` / `.fxb` named Dune | Dune 3 presets |
+| `.adv`, `.adg` | Ableton User Library Presets |
+
+Anything else, including a `.fxb` or `.h2p` whose pack name does not say which synth it belongs to, goes to `_Presets Unsorted/`. Nexus and Avenger sell expansions rather than loose preset files, so they are not moved.
+
+`reorganize` moves files already in the library and reuses cached analysis. It leaves `_Duplicates/` alone unless you pass that folder as `--section`.
 
 By default `ingest` and `sort` copy files out of the Splice folder and leave the originals in place (`keep_originals` in the config). A second copy of the same audio follows `duplicates`: `trash` (default), `quarantine`, `keep`, or `symlink`. A file that only *sounds* the same (another sample rate or gain) is reported and kept.
 
