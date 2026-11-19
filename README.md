@@ -55,6 +55,8 @@ Other commands:
 
 ```bash
 uv run crate ingest "/path/to/Some Pack" --apply   # unpack zips, classify, and sort
+uv run crate reorganize --apply                    # re-file the library after a rule change
+uv run crate reorganize --section "One Shots/Kicks"
 uv run crate analyze "/path/to/Some Pack"          # cache features, move nothing
 uv run crate unpack "/path/to/Some Pack"           # flatten folders and extract zips
 uv run crate find --type kick --key Amin --min-bpm 90 --max-bpm 140
@@ -75,7 +77,9 @@ Labels look like `kick`, `snare:tight`, `kick:punchy`, `loop:drums`, or `oneshot
 
 `watch` leaves files that are already in the Splice folder alone. `--backfill` ingests those too. `--menu` puts `12 filed, 3 need review` in the menu bar when the `mac` extra is installed.
 
-Every command that moves files is a dry run unless you pass `--apply`. Filenames are never changed, and `.asd` files move with their sample. By default `ingest` and `sort` copy files out of the Splice folder and leave the originals in place (`keep_originals` in the config). A second copy of the same audio follows `duplicates`: `trash` (default), `quarantine`, `keep`, or `symlink`. A file that only *sounds* the same (another sample rate or gain) is reported and kept.
+Every command that moves files is a dry run unless you pass `--apply`. Filenames stay as they are unless `rename.enabled` is true in the config. The template is `{type}_{character}_{key}_{bpm}_{original}`, and any token that is unknown is left out. `.asd` files move with their sample, including under a new name. MIDI goes to `MIDI/`. Presets go to the plugin folder confirmed in `crate init` (`.fxp`, `.vital`, `.adv`, `.adg`); anything else goes to `_Presets Unsorted/`. `reorganize` moves files already in the library and reuses cached analysis. It leaves `_Duplicates/` alone unless you pass that folder as `--section`.
+
+By default `ingest` and `sort` copy files out of the Splice folder and leave the originals in place (`keep_originals` in the config). A second copy of the same audio follows `duplicates`: `trash` (default), `quarantine`, `keep`, or `symlink`. A file that only *sounds* the same (another sample rate or gain) is reported and kept.
 
 Large folders split into Punchy/Soft, Body/Tight, or Straight/Swung only after about 300 files. There are no BPM folders.
 

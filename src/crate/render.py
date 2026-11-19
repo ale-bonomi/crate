@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.console import Console
 from rich.table import Table
 
-from .planner import Plan
+from .planner import Plan, PlannedOp
 from .scan import ScanResult
+
+
+def _note(op: PlannedOp) -> str:
+    if op.renamed:
+        return "renamed (collision)"
+    original = Path(op.original).name
+    if original != op.dst.name:
+        return "renamed"
+    return ""
 
 
 def show_plan(
@@ -24,7 +35,7 @@ def show_plan(
     for o in shown[:limit]:
         table.add_row(
             o.mode, o.original, str(o.dst), f"{o.confidence:.2f}",
-            "renamed (collision)" if o.renamed else "",
+            _note(o),
         )  # fmt: skip
     console.print(table)
     if len(shown) > limit:

@@ -54,8 +54,19 @@ class Taxonomy(BaseModel):
     loops: dict[str, Category] = Field(default_factory=_default_loops)
 
 
+def default_presets() -> dict[str, str]:
+    return {
+        ".fxp": "~/Library/Audio/Presets/Xfer Records/Serum Presets/User",
+        ".vital": "~/Music/Vital/User/Presets",
+        ".adv": "<Ableton User Library>/Presets",
+        ".adg": "<Ableton User Library>/Presets",
+        "unknown": "_Presets Unsorted",
+    }
+
+
 class NonAudio(BaseModel):
     midi: str = "MIDI"
+    presets: dict[str, str] = Field(default_factory=default_presets)
     other: str = "leave"
 
 
@@ -94,6 +105,7 @@ class Config(BaseModel):
     keep_originals: bool = True
     taxonomy: Taxonomy = Field(default_factory=Taxonomy)
     non_audio: NonAudio = Field(default_factory=NonAudio)
+    ableton_user_library: Path | None = None
     clap_prompts: dict[str, list[str]] = Field(default_factory=_default_prompts)
     clap_enabled: bool = True
     project_folders: list[Path] = Field(default_factory=list)

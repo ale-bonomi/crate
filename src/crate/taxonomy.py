@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from .analyze.metadata import Meta
 from .config import Config
@@ -46,3 +46,31 @@ def route_audio(meta: Meta, cfg: Config) -> Route:
 
 def route_midi(cfg: Config) -> Route:
     return Route(cfg.non_audio.midi, "midi", 1.0)
+
+
+ABLETON_LIBRARY = "<Ableton User Library>"
+
+
+def expand_folder(folder: str, cfg: Config) -> str:
+    """Expand ~ and the Ableton library token. Relative folders stay relative."""
+    library = cfg.ableton_user_library
+    if library is not None:
+        folder = folder.replace(ABLETON_LIBRARY, str(Path(library).expanduser()))
+    return str(Path(folder).expanduser())
+
+
+def route_preset(path: Path, cfg: Config) -> Route | None:
+    ext = path.suffix.lower()
+    dest = cfg.non_audio.presets.get(ext)
+    if dest is None:
+        dest = cfg.non_audio.presets.get("unknown")
+    if not dest or dest == "leave":
+        return None
+    return Route(expand_folder(dest, cfg), f"preset/{ext.lstrip('.')}", 1.0)
+
+
+def route_other(cfg: Config) -> Route | None:
+    dest = cfg.non_audio.other
+    if not dest or dest == "leave":
+        return None
+    return Route(expand_folder(dest, cfg), "other", 1.0)
