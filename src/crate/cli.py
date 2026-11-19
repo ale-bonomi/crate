@@ -767,6 +767,16 @@ def undo(
 
 
 @app.command()
+def gui(
+    port: Annotated[int, typer.Option("--port", help="Localhost port.")] = 8765,
+) -> None:
+    """Open the Callima window in the browser."""
+    from .gui.server import serve
+
+    serve(port)
+
+
+@app.command()
 def status(ctx: typer.Context) -> None:
     """Library stats, review queue, project usage, and recent batches."""
     cfg = _cfg(ctx)
