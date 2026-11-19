@@ -19,6 +19,7 @@ from .analyze.engine import annotate, save_correction
 from .analyze.fusion import apply_correction, parse_label
 from .analyze.types import Correction, Verdict
 from .config import CRATE_HOME, Config, default_config_path, load_config, save_config
+from .discover import detect
 from .evaluate import read_labels, score
 from .menubar import run as run_menu
 from .projects import index_projects, parse_als, usage
@@ -33,6 +34,7 @@ from .search import (
     similar,
     where,
 )
+from .taxonomy import ABLETON_LIBRARY
 from .watch import list_media, load_seen, mark_seen, unseen
 
 app = typer.Typer(help="Ableton-first audio sample organizer.", no_args_is_help=True)
@@ -79,9 +81,10 @@ def _paths(paths: list[Path]) -> list[Path]:
 
 @app.command()
 def init(ctx: typer.Context) -> None:
-    """Create config + DB; ask for the library root."""
+    """Create config + DB; ask for the library root and preset folders."""
     path = ctx.obj.config_path or default_config_path()
     cfg = load_config(path) if path.exists() else Config()
+    found = detect()
     default = str(cfg.library_roots[0])
     root = typer.prompt("Library root (where sorted samples will live)", default=default)
     splice = typer.prompt("Splice folder", default=str(cfg.splice_folder))
@@ -89,22 +92,56 @@ def init(ctx: typer.Context) -> None:
         "Ableton project folder (blank to skip)",
         default=str(cfg.project_folders[0]) if cfg.project_folders else "",
     )
+    library_default = str(
+        cfg.ableton_user_library or found.user_library or Path("~/Music/Ableton/User Library")
+    )
+    user_library = typer.prompt("Ableton User Library", default=library_default)
     cfg.library_roots = [Path(root)]
     cfg.splice_folder = Path(splice)
     cfg.project_folders = [Path(projects)] if projects.strip() else []
+    cfg.ableton_user_library = Path(user_library) if user_library.strip() else None
+    proposed = found.presets
+    if cfg.ableton_user_library is not None:
+        library = str(cfg.ableton_user_library.expanduser())
+        proposed = {
+            ext: dest.replace(ABLETON_LIBRARY, library) for ext, dest in proposed.items()
+        }
+    console.print("Preset destinations:")
+    for ext, dest in proposed.items():
+        console.print(f"  {ext} -> {dest}")
+    if typer.confirm("Use these preset folders?", default=True):
+        cfg.non_audio.presets = proposed
+    else:
+        chosen: dict[str, str] = {}
+        for ext, dest in proposed.items():
+            chosen[ext] = typer.prompt(f"Folder for {ext}", default=dest)
+        cfg.non_audio.presets = chosen
     save_config(cfg, path)
     db.connect(_db_path()).close()
     console.print(f"Config written to {path}; database at {_db_path()}")
 
 
 def _scan_plan(
-    ctx: typer.Context, paths: list[Path], router_kind: str, refresh: bool = False
+    ctx: typer.Context,
+    paths: list[Path],
+    router_kind: str,
+    refresh: bool = False,
+    copy_roots: list[Path] | None = None,
+    skip_dirs: set[str] | None = None,
 ) -> tuple[Config, ScanResult, planner.Plan, Path, sqlite3.Connection]:
     cfg = _cfg(ctx)
     CRATE_HOME.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
     with console.status("Scanning..."):
-        result = scan(_paths(paths), staging)
+        result = scan(
+            _paths(paths),
+            staging,
+            include_other=router_kind == "sort" and cfg.non_audio.other != "leave",
+        )
+    if skip_dirs:
+        result.items = [
+            item for item in result.items if skip_dirs.isdisjoint(item.path.parts)
+        ]
     conn = db.connect(_db_path())
     verdicts: dict[int, Verdict] = {}
     if router_kind == "sort":
@@ -125,17 +162,27 @@ def _scan_plan(
         result.items,
         cfg,
         router,
-        [cfg.splice_folder],
+        [cfg.splice_folder] if copy_roots is None else copy_roots,
         verdicts,
         conn if router_kind == "sort" else None,
     )
     return cfg, result, plan, staging, conn
 
 
-def _run(ctx: typer.Context, paths: list[Path], apply: bool, command: str, kind: str) -> None:
+def _run(
+    ctx: typer.Context,
+    paths: list[Path],
+    apply: bool,
+    command: str,
+    kind: str,
+    copy_roots: list[Path] | None = None,
+    skip_dirs: set[str] | None = None,
+) -> None:
     from .render import show_plan
 
-    cfg, result, plan, staging, conn = _scan_plan(ctx, paths, kind)
+    cfg, result, plan, staging, conn = _scan_plan(
+        ctx, paths, kind, copy_roots=copy_roots, skip_dirs=skip_dirs
+    )
     try:
         show_plan(console, plan, result, apply)
         if not apply or not plan.ops:
@@ -163,6 +210,30 @@ def sort(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
 def ingest(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
     """Unpack, classify and sort in one shot (the main daily command)."""
     _run(ctx, paths, apply, "ingest", "sort")
+
+
+@app.command()
+def reorganize(
+    ctx: typer.Context,
+    section: Annotated[
+        str | None,
+        typer.Option("--section", help="Library subfolder to re-sort, such as 'One Shots/Kicks'."),
+    ] = None,
+    apply: Apply = False,
+) -> None:
+    """Re-sort the library after folder rules change. Cached analysis is reused."""
+    cfg = _cfg(ctx)
+    if section:
+        given = clean_path(Path(section))
+        target = given if given.is_absolute() else cfg.root / given
+        skip: set[str] = set()
+    else:
+        target = cfg.root
+        skip = {"_Duplicates"}
+    if not target.exists():
+        console.print(f"{target} does not exist.")
+        raise typer.Exit(code=1)
+    _run(ctx, [target], apply, "reorganize", "sort", copy_roots=[], skip_dirs=skip)
 
 
 @app.command()

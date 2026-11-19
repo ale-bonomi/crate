@@ -9,7 +9,22 @@ from pathlib import Path
 
 AUDIO_EXT = {".wav", ".aif", ".aiff", ".mp3", ".flac", ".ogg"}
 MIDI_EXT = {".mid", ".midi"}
-PRESET_EXT = {".fxp", ".fxb", ".vital", ".adv", ".adg", ".nmsv", ".h2p"}
+PRESET_EXT = {
+    ".fxp",
+    ".fxb",
+    ".vital",
+    ".adv",
+    ".adg",
+    ".nmsv",
+    ".h2p",
+    ".omnisphere",
+    ".pig",
+    ".pgtx",
+    ".mxpreset",
+    ".phaseplant",
+    ".spf",
+    ".sbf",
+}
 ARCHIVE_EXT = {".zip"}
 UNSUPPORTED_ARCHIVE_EXT = {".rar", ".7z"}
 JUNK_DIRS = {"__MACOSX"}
@@ -90,7 +105,7 @@ def _infer_pack(path: Path, directory: Path) -> str | None:
     return rel.parts[0] if len(rel.parts) > 1 else directory.name
 
 
-def scan(inputs: list[Path], staging: Path) -> ScanResult:
+def scan(inputs: list[Path], staging: Path, *, include_other: bool = False) -> ScanResult:
     res = ScanResult()
     counter = [0]
 
@@ -139,7 +154,7 @@ def scan(inputs: list[Path], staging: Path) -> ScanResult:
                     res.warnings.append(f"{original}: {ext} archives not supported yet; skipped")
                     continue
                 kind = kind_of(p)
-                if kind == "other":
+                if kind == "other" and not include_other:
                     res.skipped.append((original, "not a sample/midi/preset"))
                     continue
                 pack = base.pack if base.archive else _infer_pack(p, directory)
@@ -161,7 +176,7 @@ def scan(inputs: list[Path], staging: Path) -> ScanResult:
             walk(inp, _Base(str(inp), False, None, (inp.name,), False, inp))
         elif inp.is_file():
             # single file or archive: treat the parent as the walk root, but only this file
-            tmp_res = _single(inp, staging, counter)
+            tmp_res = _single(inp, staging, counter, include_other)
             res.items += tmp_res.items
             res.warnings += tmp_res.warnings
             res.skipped += tmp_res.skipped
@@ -170,7 +185,9 @@ def scan(inputs: list[Path], staging: Path) -> ScanResult:
     return res
 
 
-def _single(path: Path, staging: Path, counter: list[int]) -> ScanResult:
+def _single(
+    path: Path, staging: Path, counter: list[int], include_other: bool = False
+) -> ScanResult:
     """Scan one file by linking it into a throwaway walk of its own."""
     res = ScanResult()
     ext = path.suffix.lower()
@@ -183,7 +200,7 @@ def _single(path: Path, staging: Path, counter: list[int]) -> ScanResult:
         except zipfile.BadZipFile:
             res.skipped.append((str(path), "bad zip"))
             return res
-        sub = scan([dest], staging)
+        sub = scan([dest], staging, include_other=include_other)
         root = path.parent / path.stem
         for it in sub.items:
             res.items.append(
@@ -201,7 +218,7 @@ def _single(path: Path, staging: Path, counter: list[int]) -> ScanResult:
         res.skipped += sub.skipped
         return res
     kind = kind_of(path)
-    if kind == "other" or is_junk(path.name):
+    if is_junk(path.name) or (kind == "other" and not include_other):
         res.skipped.append((str(path), "not a sample/midi/preset"))
     else:
         res.items.append(

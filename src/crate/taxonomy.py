@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from .analyze.metadata import Meta
 from .config import Config
@@ -46,3 +46,51 @@ def route_audio(meta: Meta, cfg: Config) -> Route:
 
 def route_midi(cfg: Config) -> Route:
     return Route(cfg.non_audio.midi, "midi", 1.0)
+
+
+ABLETON_LIBRARY = "<Ableton User Library>"
+
+
+def expand_folder(folder: str, cfg: Config) -> str:
+    """Expand ~ and the Ableton library token. Relative folders stay relative."""
+    library = cfg.ableton_user_library
+    if library is not None:
+        folder = folder.replace(ABLETON_LIBRARY, str(Path(library).expanduser()))
+    return str(Path(folder).expanduser())
+
+
+# Shared extensions. The first matching pack or folder name wins.
+# "serum" is also inside "serum2", so the longer hint has to come first.
+_HINTS: tuple[tuple[str, frozenset[str], tuple[str, ...]], ...] = (
+    (".fxp", frozenset({".fxp", ".fxb"}), ("serum 2", "serum2")),
+    ("sylenth1", frozenset({".fxp", ".fxb"}), ("sylenth",)),
+    ("dune", frozenset({".fxp", ".fxb"}), ("dune",)),
+    ("serum", frozenset({".fxp", ".fxb"}), ("serum",)),
+    ("diva", frozenset({".h2p"}), ("diva",)),
+    ("hive", frozenset({".h2p"}), ("hive",)),
+    ("zebra2", frozenset({".h2p"}), ("zebra",)),
+)
+
+
+def route_preset(path: Path, cfg: Config, folders: tuple[str, ...] = ()) -> Route | None:
+    ext = path.suffix.lower()
+    text = " ".join((*folders, path.stem)).lower()
+    dest: str | None = None
+    for key, extensions, hints in _HINTS:
+        if ext in extensions and any(hint in text for hint in hints):
+            dest = cfg.non_audio.presets.get(key)
+            break
+    if dest is None:
+        dest = cfg.non_audio.presets.get(ext)
+    if dest is None:
+        dest = cfg.non_audio.presets.get("unknown")
+    if not dest or dest == "leave":
+        return None
+    return Route(expand_folder(dest, cfg), f"preset/{ext.lstrip('.') or 'preset'}", 1.0)
+
+
+def route_other(cfg: Config) -> Route | None:
+    dest = cfg.non_audio.other
+    if not dest or dest == "leave":
+        return None
+    return Route(expand_folder(dest, cfg), "other", 1.0)

@@ -13,8 +13,9 @@ from .analyze.types import Verdict
 from .config import Category, Config
 from .dedupe import library_copy, near_copies
 from .hashing import file_hash
+from .naming import filename_from_template, template_values
 from .scan import AUDIO_EXT, Item
-from .taxonomy import Route, route_audio, route_midi
+from .taxonomy import Route, expand_folder, route_audio, route_midi, route_other, route_preset
 
 _SPLIT_NAMES = {
     "punch": {"punchy": "Punchy", "soft": "Soft"},
@@ -66,11 +67,18 @@ class Plan:
 Router = Callable[[Item], tuple[Path, str, float] | None]
 
 
+def place(cfg: Config, folder: str) -> Path:
+    expanded = Path(expand_folder(folder, cfg))
+    if expanded.is_absolute():
+        return expanded
+    return cfg.root / expanded
+
+
 def sort_router(cfg: Config, verdicts: dict[int, Verdict] | None = None) -> Router:
-    root = cfg.root
     verdicts = verdicts or {}
 
     def route(item: Item) -> tuple[Path, str, float] | None:
+        r: Route | None
         if item.kind == "audio":
             verdict = verdicts.get(id(item))
             if verdict is not None:
@@ -84,12 +92,16 @@ def sort_router(cfg: Config, verdicts: dict[int, Verdict] | None = None) -> Rout
                 )
             else:
                 meta = metadata.parse(item.path.stem, item.folders)
-            r: Route = route_audio(meta, cfg)
+            r = route_audio(meta, cfg)
         elif item.kind == "midi":
             r = route_midi(cfg)
+        elif item.kind == "preset":
+            r = route_preset(item.path, cfg, item.folders)
         else:
-            return None  # presets & others stay where they are
-        return root / r.folder, r.label, r.confidence
+            r = route_other(cfg)
+        if r is None:
+            return None
+        return place(cfg, r.folder), r.label, r.confidence
 
     return route
 
@@ -149,7 +161,7 @@ def build_plan(
             continue
         folder, label, conf = routed
         src = item.path
-        dst = folder / src.name
+        dst = folder / _dest_name(item, cfg, verdict, conn)
         identity = None
         if verdict is not None:
             identity = verdict.content_hash or verdict.raw_hash
@@ -233,6 +245,37 @@ def build_plan(
 
     _apply_splits(plan, cfg)
     return plan
+
+
+def _dest_name(
+    item: Item, cfg: Config, verdict: Verdict | None, conn: sqlite3.Connection | None
+) -> str:
+    if not cfg.rename.enabled or item.kind != "audio":
+        return item.path.name
+    rendered = filename_from_template(
+        cfg.rename.template,
+        template_values(verdict, _original_stem(item, conn)),
+        item.path.suffix,
+    )
+    return rendered or item.path.name
+
+
+def _original_stem(item: Item, conn: sqlite3.Connection | None) -> str:
+    if conn is not None:
+        for key in (str(item.path), _resolved(item.path)):
+            row = conn.execute(
+                "SELECT original_name FROM files WHERE current_path=?", (key,)
+            ).fetchone()
+            if row and row["original_name"]:
+                return Path(str(row["original_name"])).stem
+    return item.path.stem
+
+
+def _resolved(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
 
 
 def _under(src: Path, roots: list[Path]) -> bool:
