@@ -1,6 +1,6 @@
 [project]
 name = "crate"
-version = "0.0.1"
+version = "0.1.0"
 description = "Ableton-first audio sample organizer"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,13 @@ dependencies = [
   "pydantic>=2.6",
   "pyyaml>=6",
   "send2trash>=1.8",
+  "numpy>=1.26",
+  "soundfile>=0.12",
 ]
+
+[project.optional-dependencies]
+ml = ["torch>=2.2", "transformers>=4.40"]
+mac = ["pyobjc-framework-Cocoa>=10.3"]
 
 [project.scripts]
 crate = "crate.cli:app"
@@ -40,3 +46,4 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]

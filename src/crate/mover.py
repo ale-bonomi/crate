@@ -64,7 +64,13 @@ def _done(conn: sqlite3.Connection, op_id: int) -> None:
     conn.commit()
 
 
-def execute(conn: sqlite3.Connection, plan: Plan, command: str, library_root: Path) -> int:
+def execute(
+    conn: sqlite3.Connection,
+    plan: Plan,
+    command: str,
+    library_root: Path,
+    trash: Trash = send2trash,
+) -> int:
     """Apply a plan. Returns the batch id."""
     cur = conn.execute("INSERT INTO batches(command) VALUES (?)", (command,))
     conn.commit()
@@ -93,7 +99,7 @@ def execute(conn: sqlite3.Connection, plan: Plan, command: str, library_root: Pa
             ensure_dir(op.dst.parent)
             seq += 1
             oid = _log(conn, batch, seq, op.mode, op.src, op.dst, op.original)
-            h = _perform(op)
+            h = _perform(op, trash)
             _done(conn, oid)
             _track(conn, op, h)
         for d in _prunable(plan):
@@ -110,7 +116,17 @@ def execute(conn: sqlite3.Connection, plan: Plan, command: str, library_root: Pa
     return batch
 
 
-def _perform(op: PlannedOp) -> str | None:
+def _perform(op: PlannedOp, trash: Trash) -> str | None:
+    if op.mode == "trash":
+        if op.src.exists() or op.src.is_symlink():
+            trash(str(op.src))
+        return op.raw_hash
+    if op.mode == "symlink":
+        if op.src.is_symlink() or op.src.exists():
+            op.src.unlink()
+        op.src.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(op.dst, op.src)
+        return op.raw_hash
     if op.mode == "copy":
         return copy_verified(op.src, op.dst)
     if _same_volume(op.src, op.dst):
@@ -121,19 +137,69 @@ def _perform(op: PlannedOp) -> str | None:
     return h
 
 
+def _loop_flag(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
 def _track(conn: sqlite3.Connection, op: PlannedOp, h: str | None) -> None:
+    if op.mode in {"trash", "symlink"} or op.sidecar:
+        conn.commit()
+        return
     size = op.dst.stat().st_size
+    raw = h or op.raw_hash
     row = conn.execute("SELECT id FROM files WHERE current_path=?", (str(op.src),)).fetchone()
-    if row and op.mode == "move":
+    fields = (
+        op.content_hash,
+        op.fingerprint,
+        op.sound_type,
+        _loop_flag(op.is_loop),
+        op.confidence,
+        op.bpm,
+        op.musical_key,
+        op.punch,
+        op.snare_body,
+        op.feel,
+        op.wet,
+        op.label_source,
+        size,
+    )
+    if row and op.mode in {"move", "quarantine"}:
         conn.execute(
-            "UPDATE files SET current_path=?, raw_hash=COALESCE(?, raw_hash) WHERE id=?",
-            (str(op.dst), h, row["id"]),
+            """UPDATE files SET current_path=?, raw_hash=COALESCE(?, raw_hash),
+               content_hash=COALESCE(?, content_hash), fingerprint=COALESCE(?, fingerprint),
+               sound_type=?, is_loop=?, confidence=?, bpm=?, musical_key=?, punch=?,
+               snare_body=?, feel=?, wet=?, label_source=?, size=? WHERE id=?""",
+            (str(op.dst), raw, *fields, row["id"]),
         )
-    elif not op.sidecar:
+    else:
         conn.execute(
-            "INSERT OR REPLACE INTO files(current_path, original_path, original_name, pack,"
-            " raw_hash, size) VALUES (?,?,?,?,?,?)",
-            (str(op.dst), op.original, op.src.name, op.pack, h, size),
+            """INSERT OR REPLACE INTO files(
+                current_path, original_path, original_name, pack, raw_hash, content_hash,
+                size, fingerprint, sound_type, is_loop, confidence, bpm, musical_key,
+                punch, snare_body, feel, wet, label_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(op.dst),
+                op.original,
+                op.src.name,
+                op.pack,
+                raw,
+                op.content_hash,
+                size,
+                op.fingerprint,
+                op.sound_type,
+                _loop_flag(op.is_loop),
+                op.confidence,
+                op.bpm,
+                op.musical_key,
+                op.punch,
+                op.snare_body,
+                op.feel,
+                op.wet,
+                op.label_source,
+            ),
         )
     conn.commit()
 
@@ -195,9 +261,21 @@ def undo(conn: sqlite3.Connection, batch: int, trash: Trash = send2trash) -> lis
         elif kind == "rmdir":
             assert src is not None
             src.mkdir(parents=True, exist_ok=True)
-        elif kind == "move":
+        elif kind in ("move", "quarantine"):
             assert src is not None and dst is not None
             ok = _undo_move(src, dst, warnings)
+        elif kind == "symlink":
+            assert src is not None and dst is not None
+            if src.is_symlink():
+                src.unlink()
+            if not src.exists() and dst.exists():
+                copy_verified(dst, src)
+        elif kind == "trash":
+            assert src is not None
+            if not src.exists():
+                warnings.append(
+                    f"{src} is in the Trash; pull it back from there if you still need it"
+                )
         elif kind in ("copy", "extract"):
             assert dst is not None
             part = dst.with_name(dst.name + PART_SUFFIX)
@@ -206,7 +284,7 @@ def undo(conn: sqlite3.Connection, batch: int, trash: Trash = send2trash) -> lis
             if dst.exists():
                 trash(str(dst))
             conn.execute("DELETE FROM files WHERE current_path=?", (str(dst),))
-        if kind == "move" and ok:
+        if kind in ("move", "quarantine") and ok:
             assert src is not None and dst is not None
             conn.execute(
                 "UPDATE files SET current_path=? WHERE current_path=?", (str(src), str(dst))

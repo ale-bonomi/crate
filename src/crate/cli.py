@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -13,8 +15,25 @@ from rich.console import Console
 from rich.table import Table
 
 from . import db, mover, planner
+from .analyze.engine import annotate, save_correction
+from .analyze.fusion import apply_correction, parse_label
+from .analyze.types import Correction, Verdict
 from .config import CRATE_HOME, Config, default_config_path, load_config, save_config
+from .evaluate import read_labels, score
+from .menubar import run as run_menu
+from .projects import index_projects, parse_als, usage
 from .scan import ScanResult, scan
+from .search import (
+    features_for_hash,
+    filed_in_latest_batch,
+    find,
+    format_status,
+    pending_review,
+    review_count,
+    similar,
+    where,
+)
+from .watch import list_media, load_seen, mark_seen, unseen
 
 app = typer.Typer(help="Ableton-first audio sample organizer.", no_args_is_help=True)
 console = Console()
@@ -66,39 +85,65 @@ def init(ctx: typer.Context) -> None:
     default = str(cfg.library_roots[0])
     root = typer.prompt("Library root (where sorted samples will live)", default=default)
     splice = typer.prompt("Splice folder", default=str(cfg.splice_folder))
+    projects = typer.prompt(
+        "Ableton project folder (blank to skip)",
+        default=str(cfg.project_folders[0]) if cfg.project_folders else "",
+    )
     cfg.library_roots = [Path(root)]
     cfg.splice_folder = Path(splice)
+    cfg.project_folders = [Path(projects)] if projects.strip() else []
     save_config(cfg, path)
     db.connect(_db_path()).close()
     console.print(f"Config written to {path}; database at {_db_path()}")
 
 
 def _scan_plan(
-    ctx: typer.Context, paths: list[Path], router_kind: str
-) -> tuple[Config, ScanResult, planner.Plan, Path]:
+    ctx: typer.Context, paths: list[Path], router_kind: str, refresh: bool = False
+) -> tuple[Config, ScanResult, planner.Plan, Path, sqlite3.Connection]:
     cfg = _cfg(ctx)
     CRATE_HOME.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
     with console.status("Scanning..."):
         result = scan(_paths(paths), staging)
-    router = planner.sort_router(cfg) if router_kind == "sort" else planner.flatten_router
-    plan = planner.build_plan(result.items, cfg, router, [cfg.splice_folder])
-    return cfg, result, plan, staging
+    conn = db.connect(_db_path())
+    verdicts: dict[int, Verdict] = {}
+    if router_kind == "sort":
+        with console.status("Analyzing..."):
+            verdicts, warnings = annotate(
+                result.items,
+                conn,
+                cfg.clap_prompts if cfg.clap_enabled else {},
+                jobs=ctx.obj.jobs,
+                refresh=refresh,
+                use_clap=cfg.clap_enabled,
+            )
+        result.warnings.extend(warnings)
+        router = planner.sort_router(cfg, verdicts)
+    else:
+        router = planner.flatten_router
+    plan = planner.build_plan(
+        result.items,
+        cfg,
+        router,
+        [cfg.splice_folder],
+        verdicts,
+        conn if router_kind == "sort" else None,
+    )
+    return cfg, result, plan, staging, conn
 
 
 def _run(ctx: typer.Context, paths: list[Path], apply: bool, command: str, kind: str) -> None:
     from .render import show_plan
 
-    cfg, result, plan, staging = _scan_plan(ctx, paths, kind)
+    cfg, result, plan, staging, conn = _scan_plan(ctx, paths, kind)
     try:
         show_plan(console, plan, result, apply)
         if not apply or not plan.ops:
             return
-        conn = db.connect(_db_path())
         batch = mover.execute(conn, plan, command, cfg.root)
-        conn.close()
         console.print(f"[green]Done.[/] Batch {batch}. Undo with: crate undo {batch}")
     finally:
+        conn.close()
         shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -121,6 +166,518 @@ def ingest(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
 
 
 @app.command()
+def analyze(
+    ctx: typer.Context,
+    paths: Paths,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Recompute cached features.")] = False,
+) -> None:
+    """Analyze and cache results. Does not move files."""
+    cfg = _cfg(ctx)
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    CRATE_HOME.mkdir(parents=True, exist_ok=True)
+    conn = db.connect(_db_path())
+    try:
+        result = scan(_paths(paths), staging)
+        verdicts, warnings = annotate(
+            result.items,
+            conn,
+            cfg.clap_prompts if cfg.clap_enabled else {},
+            jobs=ctx.obj.jobs,
+            refresh=refresh,
+            use_clap=cfg.clap_enabled,
+        )
+        for warning in warnings:
+            console.print(f"[yellow]warning:[/] {warning}")
+        table = Table(title="Analysis")
+        for col in ("File", "Type", "Loop", "Key", "BPM", "Character", "Conf"):
+            table.add_column(col)
+        for item in result.items:
+            verdict = verdicts.get(id(item))
+            if verdict is None:
+                continue
+            character = verdict.punch or verdict.snare_body or verdict.feel or ""
+            if verdict.loop is True:
+                shape = "loop"
+            elif verdict.loop is False:
+                shape = "one-shot"
+            else:
+                shape = "?"
+            table.add_row(
+                item.path.name,
+                verdict.type or "?",
+                shape,
+                verdict.key or "",
+                "" if verdict.bpm is None else str(verdict.bpm),
+                character,
+                f"{verdict.confidence:.2f}",
+            )
+        console.print(table)
+    finally:
+        conn.close()
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+@app.command(name="eval")
+def evaluate_cmd(
+    ctx: typer.Context, labels: Annotated[Path, typer.Argument(help="CSV: path,type,loop")]
+) -> None:
+    """Precision and recall against a hand-labeled CSV. The CSV stays private."""
+    cfg = _cfg(ctx)
+    rows = read_labels(clean_path(labels))
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    conn = db.connect(_db_path())
+    try:
+        paths = [Path(row[0]) for row in rows]
+        result = scan(paths, staging)
+        by_name = {item.path.resolve(): item for item in result.items}
+        verdicts, _warnings = annotate(
+            result.items,
+            conn,
+            cfg.clap_prompts if cfg.clap_enabled else {},
+            jobs=ctx.obj.jobs,
+            use_clap=cfg.clap_enabled,
+        )
+        gold: list[tuple[str, str]] = []
+        predicted: list[str | None] = []
+        for path_s, typ, _loop in rows:
+            item = by_name.get(Path(path_s).expanduser().resolve())
+            verdict = verdicts.get(id(item)) if item else None
+            gold.append((path_s, typ))
+            predicted.append(verdict.type if verdict else None)
+        report = score(gold, predicted)
+    finally:
+        conn.close()
+        shutil.rmtree(staging, ignore_errors=True)
+    table = Table(title=f"Eval ({report.labeled} files)")
+    table.add_column("Type")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
+    table.add_column("Support", justify="right")
+    for label, (precision, recall, support) in sorted(report.per_type.items()):
+        table.add_row(label, f"{precision:.2f}", f"{recall:.2f}", str(support))
+    console.print(table)
+
+
+@app.command()
+def review(ctx: typer.Context, apply: Apply = False) -> None:
+    """Walk low-confidence files. With --apply, play each one and store a label."""
+    cfg = _cfg(ctx)
+    conn = db.connect(_db_path())
+    try:
+        rows = pending_review(conn, cfg.review_threshold)
+        if not rows:
+            console.print("Nothing to review.")
+            return
+        if not apply or not console.is_terminal:
+            table = Table(title="Needs review")
+            table.add_column("Path", overflow="fold")
+            table.add_column("Guess")
+            table.add_column("Conf", justify="right")
+            for row in rows:
+                table.add_row(
+                    row["current_path"], row["sound_type"] or "?", f"{row['confidence']:.2f}"
+                )
+            console.print(table)
+            if apply and not console.is_terminal:
+                console.print("Not a terminal, so nothing was assigned. Re-run in a terminal.")
+            else:
+                console.print("Re-run with [cyan]--apply[/] to listen and assign labels.")
+            return
+        import subprocess
+
+        for row in rows:
+            path = Path(row["current_path"])
+            if not path.exists():
+                continue
+            guess = row["sound_type"] or "?"
+            console.print(f"\n[bold]{path.name}[/] guessed {guess} ({row['confidence']:.2f})")
+            subprocess.run(["afplay", str(path)], check=False)
+            label = typer.prompt("Label (blank skips, q quits)", default="")
+            if label.strip().lower() == "q":
+                break
+            if not label.strip():
+                continue
+            try:
+                correction = parse_label(label)
+            except ValueError as exc:
+                console.print(f"[yellow]{exc}[/]")
+                continue
+            _commit_label(ctx, conn, cfg, path, correction)
+    finally:
+        conn.close()
+
+
+def _commit_label(
+    ctx: typer.Context,
+    conn: sqlite3.Connection,
+    cfg: Config,
+    path: Path,
+    correction: Correction,
+) -> None:
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    try:
+        result = scan([path], staging)
+        verdicts, _warnings = annotate(result.items, conn, {}, jobs=1, use_clap=False)
+        item = next(iter(result.items), None)
+        if item is None:
+            console.print(f"[yellow]cannot read {path}[/]")
+            return
+        verdict = verdicts[id(item)]
+        identity = verdict.content_hash or verdict.raw_hash
+        if not identity:
+            console.print(f"[yellow]cannot identify {path}[/]")
+            return
+        save_correction(conn, identity, correction)
+        verdicts, _warnings = annotate(result.items, conn, {}, jobs=1, use_clap=False)
+        plan = planner.build_plan(
+            result.items, cfg, planner.sort_router(cfg, verdicts), [], verdicts, conn
+        )
+        from .render import show_plan
+
+        show_plan(console, plan, result, True)
+        if plan.ops:
+            batch = mover.execute(conn, plan, "correct", cfg.root)
+            console.print(f"[green]Labeled.[/] Batch {batch}.")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+@app.command()
+def correct(
+    ctx: typer.Context,
+    path: Annotated[Path, typer.Argument(help="File to relabel.")],
+    label: Annotated[str, typer.Argument(help="kick, snare:tight, loop:drums, ...")],
+    apply: Apply = False,
+) -> None:
+    """Store a manual label. It wins over audio and filenames forever."""
+    cfg = _cfg(ctx)
+    path = clean_path(path)
+    try:
+        correction = parse_label(label)
+    except ValueError as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    conn = db.connect(_db_path())
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    try:
+        result = scan([path], staging)
+        verdicts, _warnings = annotate(result.items, conn, {}, jobs=ctx.obj.jobs, use_clap=False)
+        item = next((it for it in result.items if it.kind == "audio"), None)
+        if item is None:
+            console.print(f"No audio at {path}")
+            raise typer.Exit(code=1)
+        current = verdicts[id(item)]
+        preview = apply_correction(current, correction)
+        preview.content_hash = current.content_hash
+        preview.fingerprint = current.fingerprint
+        preview.raw_hash = current.raw_hash
+        preview.features = current.features
+        verdicts[id(item)] = preview
+        plan = planner.build_plan(
+            result.items, cfg, planner.sort_router(cfg, verdicts), [], verdicts, conn
+        )
+        from .render import show_plan
+
+        show_plan(console, plan, result, apply)
+        if not apply:
+            return
+        identity = current.content_hash or current.raw_hash
+        if identity:
+            save_correction(conn, identity, correction)
+        if plan.ops:
+            batch = mover.execute(conn, plan, "correct", cfg.root)
+            console.print(f"[green]Labeled.[/] Batch {batch}.")
+    finally:
+        conn.close()
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+@app.command()
+def dedupe(ctx: typer.Context, apply: Apply = False) -> None:
+    """Find copies of library audio. Near-duplicates are reported and kept."""
+    from .dedupe import identify, scan_tree
+
+    cfg = _cfg(ctx)
+    conn = db.connect(_db_path())
+    try:
+        roots = [cfg.root, cfg.splice_folder]
+        files = scan_tree(roots)
+        groups: dict[str, list[Path]] = {}
+        prints: dict[str, list[tuple[Path, str | None]]] = {}
+        for path in files:
+            content, _raw, finger = identify(conn, path)
+            key = content or _raw
+            if key:
+                groups.setdefault(key, []).append(path)
+            if finger:
+                prints.setdefault(finger, []).append((path, content))
+        actions = 0
+        for paths in groups.values():
+            if len(paths) < 2:
+                continue
+            kept = _canonical(paths, cfg.root)
+            extras = [path for path in paths if path != kept]
+            for extra in extras:
+                actions += 1
+                console.print(f"duplicate: {extra}  →  keep {kept} ({cfg.duplicates})")
+                if apply:
+                    _resolve_duplicate(conn, cfg, extra, kept)
+        for entries in prints.values():
+            hashes = {content for _, content in entries if content}
+            if len(hashes) < 2:
+                continue
+            shown = ", ".join(str(path) for path, _content in entries)
+            console.print(f"[yellow]near-duplicate (kept):[/] {shown}")
+        if actions == 0:
+            console.print("No exact duplicates.")
+        elif not apply:
+            console.print(
+                "[bold]Dry run.[/] Re-run with [cyan]--apply[/] to resolve exact duplicates."
+            )
+    finally:
+        conn.close()
+
+
+def _canonical(paths: list[Path], root: Path) -> Path:
+    root = root.expanduser().resolve()
+    inside = [path for path in paths if path.resolve().is_relative_to(root)]
+    return inside[0] if inside else paths[0]
+
+
+def _resolve_duplicate(conn: sqlite3.Connection, cfg: Config, extra: Path, kept: Path) -> None:
+    if cfg.duplicates == "keep":
+        return
+    if cfg.duplicates == "symlink":
+        extra.unlink()
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.symlink_to(kept)
+        return
+    if cfg.duplicates == "quarantine":
+        dest = cfg.root / "_Duplicates" / extra.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            dest = dest.with_name(f"{dest.stem} (2){dest.suffix}")
+        if mover._same_volume(extra, dest):
+            extra.rename(dest)
+        else:
+            mover.copy_verified(extra, dest)
+            extra.unlink()
+        return
+    from send2trash import send2trash
+
+    send2trash(str(extra))
+    conn.execute("DELETE FROM files WHERE current_path=?", (str(extra),))
+    conn.commit()
+
+
+@app.command(name="where")
+def where_cmd(
+    ctx: typer.Context,
+    query: Annotated[str, typer.Argument(help="Original name, current name, or part of a path.")],
+) -> None:
+    """Where a file went, from its original name or its name now."""
+    conn = db.connect(_db_path())
+    try:
+        rows = where(conn, query)
+    finally:
+        conn.close()
+    if not rows:
+        console.print(f"Nothing matched {query!r}.")
+        raise typer.Exit(code=1)
+    table = Table(title=f"Matches for {query}")
+    for col in ("now", "was", "type", "pack"):
+        table.add_column(col, overflow="fold")
+    for row in rows:
+        table.add_row(
+            row["current_path"], row["original_path"], row["sound_type"] or "", row["pack"] or ""
+        )
+    console.print(table)
+
+
+@app.command(name="find")
+def find_cmd(
+    ctx: typer.Context,
+    sound_type: Annotated[str | None, typer.Option("--type")] = None,
+    musical_key: Annotated[str | None, typer.Option("--key")] = None,
+    min_bpm: Annotated[int | None, typer.Option("--min-bpm")] = None,
+    max_bpm: Annotated[int | None, typer.Option("--max-bpm")] = None,
+    loop: Annotated[
+        bool | None, typer.Option("--loop/--oneshot", help="Loops or one-shots.")
+    ] = None,
+    punch: Annotated[str | None, typer.Option("--punch", help="punchy or soft")] = None,
+    feel: Annotated[str | None, typer.Option("--feel", help="straight or swung")] = None,
+    pack: Annotated[str | None, typer.Option("--pack")] = None,
+    similar_to: Annotated[
+        Path | None, typer.Option("--similar", help="Rank library files by this one.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit")] = 40,
+) -> None:
+    """Search the indexed library. Prints paths you can drag into Live."""
+    cfg = _cfg(ctx)
+    conn = db.connect(_db_path())
+    try:
+        if similar_to is not None:
+            _print_similar(ctx, conn, cfg, clean_path(similar_to), limit)
+            return
+        rows = find(
+            conn,
+            sound_type=sound_type,
+            musical_key=musical_key,
+            min_bpm=min_bpm,
+            max_bpm=max_bpm,
+            loop=loop,
+            punch=punch,
+            feel=feel,
+            pack=pack,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+    if similar_to is not None:
+        return
+    if not rows:
+        console.print("No matches.")
+        return
+    for row in rows:
+        bits = [row["sound_type"] or "?", "loop" if row["is_loop"] else "one-shot"]
+        if row["musical_key"]:
+            bits.append(row["musical_key"])
+        if row["bpm"]:
+            bits.append(f"{row['bpm']}bpm")
+        if row["punch"]:
+            bits.append(row["punch"])
+        if row["feel"]:
+            bits.append(row["feel"])
+        console.print(f"{row['current_path']}  [dim]{' · '.join(bits)}[/]")
+
+
+def _print_similar(
+    ctx: typer.Context, conn: sqlite3.Connection, cfg: Config, path: Path, limit: int
+) -> None:
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    try:
+        result = scan([path], staging)
+        verdicts, _warnings = annotate(result.items, conn, cfg.clap_prompts, jobs=1, use_clap=False)
+        item = next((it for it in result.items if it.kind == "audio"), None)
+        verdict = verdicts.get(id(item)) if item else None
+        payload: dict[str, object] | None = None
+        if verdict and verdict.content_hash:
+            payload = features_for_hash(conn, verdict.content_hash)
+        if payload is None and verdict and verdict.features:
+            payload = dict(verdict.features.to_json())
+        if not payload:
+            console.print(f"Could not hear {path}")
+            return
+        ranked = similar(conn, payload, limit)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if not ranked:
+        console.print("Nothing comparable in the library yet.")
+        return
+    for dist, row in ranked:
+        if Path(row["current_path"]).resolve() == path.resolve():
+            continue
+        console.print(f"{row['current_path']}  [dim]{dist:.2f} {row['sound_type'] or ''}[/]")
+
+
+@app.command()
+def projects(
+    ctx: typer.Context,
+    paths: Annotated[
+        list[Path] | None, typer.Argument(help="Live sets or a project folder.")
+    ] = None,
+    apply: Apply = False,
+) -> None:
+    """Index .als files and report which library samples they use."""
+    cfg = _cfg(ctx)
+    targets = _paths(paths or []) or [p.expanduser() for p in cfg.project_folders]
+    if not targets:
+        console.print("Pass a .als file, or set project_folders in the config.")
+        raise typer.Exit(code=1)
+    if not apply:
+        count = 0
+        for target in targets:
+            files = sorted(target.rglob("*.als")) if target.is_dir() else [target]
+            for als in files:
+                if als.suffix.lower() != ".als":
+                    continue
+                refs = parse_als(als)
+                count += 1
+                console.print(f"{als}: {len(refs)} sample refs")
+        console.print(
+            f"[bold]Dry run.[/] {count} sets. Re-run with [cyan]--apply[/] to store them."
+        )
+        return
+    conn = db.connect(_db_path())
+    try:
+        indexed = index_projects(conn, targets)
+        report = usage(conn)
+        for als, refs in indexed:
+            console.print(f"{als.name}: {len(refs)} sample refs")
+        console.print(
+            f"Library: {report.used} used, {report.unused} unused, {len(report.missing)} missing"
+        )
+        for name in report.missing[:20]:
+            console.print(f"  missing {name}")
+    finally:
+        conn.close()
+
+
+@app.command()
+def watch(
+    ctx: typer.Context,
+    apply: Apply = False,
+    backfill: Annotated[
+        bool, typer.Option("--backfill", help="Also ingest what is already in Splice.")
+    ] = False,
+    interval: Annotated[float, typer.Option("--interval", help="Seconds between checks.")] = 5,
+    once: Annotated[bool, typer.Option("--once", help="Check once and exit.")] = False,
+    menu: Annotated[
+        bool | None,
+        typer.Option("--menu/--no-menu", help="macOS menu bar when PyObjC is installed."),
+    ] = None,
+) -> None:
+    """Watch the Splice folder. New packs are planned; --apply files them."""
+    cfg = _cfg(ctx)
+    conn = db.connect(_db_path())
+    filed = {"n": 0}
+
+    def poll() -> str:
+        current = list_media(cfg.splice_folder)
+        known = load_seen(conn)
+        if not backfill and not known:
+            mark_seen(conn, current)
+            console.print(
+                f"Watching {cfg.splice_folder}. {len(current)} existing files left as they are."
+            )
+            return format_status(filed["n"], review_count(conn, cfg.review_threshold))
+        fresh = unseen(current, known)
+        if fresh:
+            _run(ctx, fresh, apply, "watch", "sort")
+            if apply:
+                filed["n"] += len(fresh)
+                mark_seen(conn, fresh)
+        return format_status(filed["n"], review_count(conn, cfg.review_threshold))
+
+    try:
+        if once:
+            console.print(poll())
+            return
+        use_menu = menu if menu is not None else False
+        if use_menu and run_menu(poll, interval):
+            return
+        if use_menu:
+            console.print("Menu bar needs PyObjC. Install with: uv sync --extra mac")
+        while True:
+            console.print(poll())
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("Stopped.")
+    finally:
+        conn.close()
+
+
+@app.command()
 def undo(
     batch_id: Annotated[int | None, typer.Argument()] = None,
 ) -> None:
@@ -133,16 +690,27 @@ def undo(
     warnings = mover.undo(conn, batch)
     for w in warnings:
         console.print(f"[yellow]warning:[/] {w}")
-    status = conn.execute("SELECT status FROM batches WHERE id=?", (batch,)).fetchone()
-    console.print(f"Batch {batch}: {status['status'] if status else 'unknown'}")
+    status_row = conn.execute("SELECT status FROM batches WHERE id=?", (batch,)).fetchone()
+    console.print(f"Batch {batch}: {status_row['status'] if status_row else 'unknown'}")
+    conn.close()
 
 
 @app.command()
 def status(ctx: typer.Context) -> None:
-    """Library stats and recent batches."""
+    """Library stats, review queue, project usage, and recent batches."""
+    cfg = _cfg(ctx)
     conn = db.connect(_db_path())
     n = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    line = format_status(filed_in_latest_batch(conn), review_count(conn, cfg.review_threshold))
+    console.print(line)
     console.print(f"Tracked files: {n}")
+    report = usage(conn)
+    projects_n = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    if projects_n:
+        console.print(
+            f"Projects: {projects_n} sets, {report.used} samples used, "
+            f"{report.unused} unused, {len(report.missing)} missing"
+        )
     table = Table(title="Recent batches")
     for col in ("id", "when", "command", "status", "ops"):
         table.add_column(col)
@@ -152,3 +720,4 @@ def status(ctx: typer.Context) -> None:
     ):
         table.add_row(str(b["id"]), b["created_at"], b["command"], b["status"], str(b["n"]))
     console.print(table)
+    conn.close()

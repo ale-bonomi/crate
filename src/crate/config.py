@@ -59,6 +59,28 @@ class NonAudio(BaseModel):
     other: str = "leave"
 
 
+def _default_prompts() -> dict[str, list[str]]:
+    return {
+        "kick": ["a punchy electronic kick drum", "a bass drum hit"],
+        "snare": ["a snare drum hit"],
+        "snare_tight": ["a short tight snare", "a crisp UK garage rimshot"],
+        "snare_body": ["a big snare with a long body and low-mid thump"],
+        "clap": ["a hand clap"],
+        "hat": ["a closed hi-hat", "an open hi-hat"],
+        "perc": ["a percussion hit, shaker, conga or cowbell"],
+        "808": ["an 808 sub bass hit"],
+        "bass": ["a bass note or bass one-shot"],
+        "melodic": ["a musical synth, keys, pluck or pad note"],
+        "vocal": ["a vocal chop or sung note"],
+        "fx": ["a sound effect, riser, impact or texture"],
+        "loop_drums": ["a drum loop"],
+        "loop_bass": ["a bass loop"],
+        "loop_melodic": ["a melodic chord loop"],
+        "loop_vocal": ["a vocal loop"],
+        "loop_fx": ["an ambient texture loop"],
+    }
+
+
 class Config(BaseModel):
     library_roots: list[Path] = Field(default_factory=lambda: [Path("~/Music/Samples Library")])
     splice_folder: Path = Path("~/Splice/Samples")
@@ -72,6 +94,9 @@ class Config(BaseModel):
     keep_originals: bool = True
     taxonomy: Taxonomy = Field(default_factory=Taxonomy)
     non_audio: NonAudio = Field(default_factory=NonAudio)
+    clap_prompts: dict[str, list[str]] = Field(default_factory=_default_prompts)
+    clap_enabled: bool = True
+    project_folders: list[Path] = Field(default_factory=list)
 
     @property
     def root(self) -> Path:

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from crate import db, mover, planner
+from crate.analyze.engine import annotate
 from crate.config import Config
 from crate.scan import scan
 
@@ -44,18 +45,20 @@ def run(world, apply=True):
     staging = tmp / "staging"
     staging.mkdir(exist_ok=True)
     res = scan([inbox], staging)
-    plan = planner.build_plan(res.items, cfg, planner.sort_router(cfg), [])
+    verdicts, _warnings = annotate(res.items, conn, {}, jobs=1, use_clap=False)
+    plan = planner.build_plan(
+        res.items, cfg, planner.sort_router(cfg, verdicts), [], verdicts, conn
+    )
     batch = mover.execute(conn, plan, "sort", lib) if apply else None
     return res, plan, batch
 
 
 def test_dry_run_changes_nothing(world):
-    tmp, inbox, lib, *_ = world
-    before = snapshot(tmp)
+    _tmp, inbox, lib, *_ = world
+    before = snapshot(inbox)
     run(world, apply=False)
-    assert {k: v for k, v in snapshot(tmp).items() if not k.startswith("staging")} == {
-        k: v for k, v in before.items() if not k.startswith("staging")
-    }
+    assert snapshot(inbox) == before
+    assert not lib.exists() or not any(path.is_file() for path in lib.rglob("*"))
 
 
 def test_sort_then_undo_restores_bytes(world):
@@ -108,11 +111,11 @@ def test_undo_after_crash_mid_batch(world, monkeypatch):
     calls = {"n": 0}
     real = mover._perform
 
-    def flaky(op):
+    def flaky(op, trash=None):
         calls["n"] += 1
         if calls["n"] == 3:
             raise KeyboardInterrupt
-        return real(op)
+        return real(op, trash)
 
     monkeypatch.setattr(mover, "_perform", flaky)
     with pytest.raises(KeyboardInterrupt):

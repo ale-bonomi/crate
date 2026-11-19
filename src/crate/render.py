@@ -37,6 +37,9 @@ def show_plan(
         counts.add_row(folder, str(n))
     console.print(counts)
 
+    for note in plan.notes:
+        console.print(f"[yellow]near-duplicate:[/] {note}")
+
     sidecars = sum(1 for o in plan.ops if o.sidecar)
     console.print(
         f"{len(shown)} files, {sidecars} .asd sidecars, {len(plan.skipped)} skipped"
