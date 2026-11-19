@@ -1,1 +1,1 @@
-"""Sample analysis (metadata now; DSP and CLAP in later milestones)."""
+"""Sample analysis: filenames, DSP features, and optional CLAP scores, fused into one label."""

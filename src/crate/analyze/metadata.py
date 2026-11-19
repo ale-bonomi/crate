@@ -108,6 +108,12 @@ _TOKEN_RE = re.compile(r"[A-Za-z]+|\d+")
 _CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
 
+PUNCH_WORDS = {"punchy": "punchy", "soft": "soft", "hard": "punchy"}
+BODY_WORDS = {"tight": "tight", "body": "body"}
+FEEL_WORDS = {"straight": "straight", "swung": "swung", "swing": "swung", "groovy": "swung"}
+WET_WORDS = {"wet": "wet", "dry": "dry"}
+
+
 @dataclass
 class Meta:
     type: str | None = None  # kick, snare, ..., drum, top
@@ -116,6 +122,10 @@ class Meta:
     key: str | None = None
     confidence: float = 0.0
     reason: str = ""
+    punch: str | None = None
+    snare_body: str | None = None
+    feel: str | None = None
+    wet: str | None = None
     tokens: list[str] = field(default_factory=list)
 
 
@@ -213,4 +223,18 @@ def parse(stem: str, folders: tuple[str, ...]) -> Meta:
         meta.reason = f"folder:{folder_type}"
     if meta.type and meta.loop is None:
         meta.confidence = round(meta.confidence - 0.1, 2)
+    blob = list(meta.tokens)
+    for folder in near_first:
+        blob.extend(tokenize(folder))
+    meta.punch = _first(blob, PUNCH_WORDS)
+    meta.snare_body = _first(blob, BODY_WORDS)
+    meta.feel = _first(blob, FEEL_WORDS)
+    meta.wet = _first(blob, WET_WORDS)
     return meta
+
+
+def _first(tokens: list[str], table: dict[str, str]) -> str | None:
+    for token in tokens:
+        if token in table:
+            return table[token]
+    return None
