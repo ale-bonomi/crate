@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -118,6 +119,180 @@ def _slug(text: str) -> str:
     return cleaned or "Untitled"
 
 
+def _clean_path(raw: str) -> Path:
+    text = raw.strip()
+    if len(text) > 1:
+        text = text.rstrip("/")
+    return Path(text).expanduser()
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return left.expanduser().resolve() == right.expanduser().resolve()
+
+
+def _within(child: Path, parent: Path) -> bool:
+    try:
+        child.expanduser().resolve().relative_to(parent.expanduser().resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _strictly_within(child: Path, parent: Path) -> bool:
+    return _within(child, parent) and not _same_path(child, parent)
+
+
+@dataclass(frozen=True)
+class Flow:
+    """How a From folder and a To folder are filed."""
+
+    id: str
+    title: str
+    detail: str
+    blocked: bool = False
+    creates_dest: bool = False
+
+
+_FLOW_TEXT: dict[str, tuple[str, str]] = {
+    "need-from": ("Choose a source", "Choose the folder to organize."),
+    "need-to": ("Choose a destination", "Choose the folder those files should land in."),
+    "missing-from": ("Source is missing", "That From folder is not on disk."),
+    "not-a-folder": ("Not a folder", "From and To both have to be folders."),
+    "missing-parent": (
+        "Destination is missing",
+        "The destination's parent folder is not on disk, so it cannot be created.",
+    ),
+    "nested": (
+        "Destination is inside the source",
+        "The To folder sits inside From. Pick a destination outside the folder being read.",
+    ),
+    "in-place": (
+        "Reorganize in place",
+        "From and To are the same folder. Files that are already in the right place stay put.",
+    ),
+    "splice-copy": (
+        "Copy out of Splice",
+        "Copy into the library. The originals stay in Splice.",
+    ),
+    "splice-copy-out": (
+        "Copy out of Splice",
+        "Copy into a folder outside the library. The originals stay in Splice.",
+    ),
+    "splice-move": (
+        "Move out of Splice",
+        "Move out of Splice. The copies there are removed.",
+    ),
+    "lift": (
+        "Move up into the parent",
+        "From sits inside To. Files move into the rest of that tree.",
+    ),
+    "reorganize": (
+        "Re-file inside the library",
+        "Move this section of the library into another library folder.",
+    ),
+    "ingest": ("File into the library", "Move this folder into the library."),
+    "export": ("Move out of the library", "Move these files out of the library."),
+    "external": (
+        "Move between folders",
+        "Move this folder into the destination. Neither folder is the library.",
+    ),
+}
+_FLOW_ORDER = (
+    "need-from",
+    "need-to",
+    "missing-from",
+    "not-a-folder",
+    "missing-parent",
+    "nested",
+    "in-place",
+    "splice-copy",
+    "splice-copy-out",
+    "splice-move",
+    "lift",
+    "reorganize",
+    "ingest",
+    "export",
+    "external",
+)
+_BLOCKED_FLOWS = {
+    "need-from",
+    "need-to",
+    "missing-from",
+    "not-a-folder",
+    "missing-parent",
+    "nested",
+}
+_MODE_NOTES = {
+    "type": "Type files by sound. Presets still go to each synth's own folder.",
+    "genre": "Group by the genre tag, then the folders the pack arrived with.",
+    "flat": "Drop every file directly in the destination.",
+    "original": "Keep the folders the pack arrived with.",
+    "random": "Spread files across four bins.",
+    "custom": "File under the custom tag, then the folders the pack arrived with.",
+}
+
+
+def flow_catalog() -> list[Flow]:
+    flows: list[Flow] = []
+    for ident in _FLOW_ORDER:
+        title, detail = _FLOW_TEXT[ident]
+        flows.append(Flow(ident, title, detail, ident in _BLOCKED_FLOWS))
+    return flows
+
+
+def describe_flow(source: Path | None, dest: Path | None, cfg: Config) -> Flow:
+    """Pick the filing flow for this pair of folders. Blocked flows must not run."""
+    if source is None:
+        return _flow("need-from")
+    if not source.exists():
+        return _flow("missing-from")
+    if not source.is_dir():
+        return _flow("not-a-folder")
+    if dest is None:
+        return _flow("need-to")
+    if dest.exists() and not dest.is_dir():
+        return _flow("not-a-folder")
+    if not dest.exists() and not dest.parent.exists():
+        return _flow("missing-parent")
+    if _strictly_within(dest, source):
+        return _flow("nested")
+    creates = not dest.exists()
+    if _same_path(source, dest):
+        return _flow("in-place", creates=creates)
+    library = cfg.root
+    splice = cfg.splice_folder
+    if _within(source, splice) and cfg.keep_originals and _within(dest, library):
+        return _flow("splice-copy", creates=creates)
+    if _within(source, splice) and cfg.keep_originals:
+        return _flow("splice-copy-out", creates=creates)
+    if _within(source, splice):
+        return _flow("splice-move", creates=creates)
+    if _strictly_within(source, dest):
+        flow = _flow("lift", creates=creates)
+        if _within(dest, library):
+            return Flow(
+                flow.id,
+                "Move a section up",
+                "From sits inside To, in the library. Files move into the rest of that tree.",
+                creates_dest=creates,
+            )
+        return flow
+    if _within(source, library) and _within(dest, library):
+        return _flow("reorganize", creates=creates)
+    if _within(dest, library):
+        return _flow("ingest", creates=creates)
+    if _within(source, library):
+        return _flow("export", creates=creates)
+    return _flow("external", creates=creates)
+
+
+def _flow(ident: str, *, creates: bool = False) -> Flow:
+    title, detail = _FLOW_TEXT[ident]
+    if creates:
+        detail = f"{detail} The destination does not exist yet. Apply creates it."
+    return Flow(ident, title, detail, ident in _BLOCKED_FLOWS, creates)
+
+
 def _default_state() -> dict[str, object]:
     return {
         "selected": "root",
@@ -205,8 +380,13 @@ class Desk:
         handler = {
             "select-folder": self._select_folder,
             "add-folder": self._add_folder,
-            "set-pack": self._set_pack,
-            "clear-pack": self._clear_pack,
+            "set-pack": self._set_from,
+            "set-from": self._set_from,
+            "set-to": self._set_to,
+            "clear-from": self._clear_from,
+            "clear-to": self._clear_to,
+            "swap-ends": self._swap_ends,
+            "clear-pack": self._clear_from,
             "set-tags": self._set_tags,
             "set-structure": self._set_structure,
             "set-mode": self._set_mode,
@@ -264,10 +444,46 @@ class Desk:
         active_id = str(self._state.get("structure") or "library")
         active = next((item for item in structures if item["id"] == active_id), structures[0])
         style = str(self._state.get("tag_style") or "keep")
-        dest = self._destination(cfg, rows, selected, str(active["mode"]))
+        source = self._from_path(cfg)
+        dest = self._to_path(cfg)
+        flow = self._flow_for(cfg, source, dest)
         return {
-            "library": [{**row, "selected": row["id"] == selected} for row in rows],
-            "destination": {"name": dest.name or "Library", "path": str(dest)},
+            "library": [
+                {
+                    **row,
+                    "selected": row["id"] == selected,
+                    "from": source is not None and _same_path(Path(row["path"]), source),
+                    "to": dest is not None and _same_path(Path(row["path"]), dest),
+                }
+                for row in rows
+            ],
+            "destination": {
+                "name": "Library" if dest is None else (dest.name or "Library"),
+                "path": "" if dest is None else str(dest),
+            },
+            "ends": {
+                "from": None
+                if source is None
+                else {"name": source.name or "Folder", "path": str(source)},
+                "to": None
+                if dest is None
+                else {"name": dest.name or "Library", "path": str(dest), "exists": dest.exists()},
+                "flow": flow.id,
+                "title": flow.title,
+                "detail": flow.detail,
+                "blocked": flow.blocked,
+                "createsDest": flow.creates_dest,
+            },
+            "flows": [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "detail": item.detail,
+                    "blocked": item.blocked,
+                    "active": item.id == flow.id,
+                }
+                for item in flow_catalog()
+            ],
             "structure": active,
             "structures": structures,
             "meta": self._pair("meta"),
@@ -467,19 +683,6 @@ class Desk:
                 )
         return rows
 
-    def _destination(
-        self, cfg: Config, rows: list[dict[str, str]], selected: str, mode: str
-    ) -> Path:
-        if mode == "type":
-            return cfg.root
-        row = next(
-            (item for item in rows if item["id"] == selected and item["kind"] == "library"),
-            None,
-        )
-        if row is None:
-            return cfg.root
-        return Path(row["path"])
-
     def _files(self, cfg: Config) -> list[dict[str, str]]:
         pinned = self._state.get("pinned")
         found: list[dict[str, str]] = []
@@ -537,40 +740,123 @@ class Desk:
         return found
 
     def _select_folder(self, payload: dict[str, object]) -> None:
+        cfg = self._fresh_config()
+        path = self._path_from_payload(payload, cfg)
+        if not path.is_dir():
+            raise DeskError("That folder is not on disk.")
         with self._lock:
-            self._state["selected"] = str(payload.get("id") or "root")
+            self._remember_from(path, cfg)
             self._clear_plan()
             self._save()
 
     def _add_folder(self, payload: dict[str, object]) -> None:
-        path = str(payload.get("path") or "").strip()
-        if not path:
+        path = _clean_path(str(payload.get("path") or ""))
+        if not str(payload.get("path") or "").strip() or not path.is_dir():
             raise DeskError("Choose a folder first.")
         with self._lock:
             extras = self._state.get("extras")
             items = extras if isinstance(extras, list) else []
             items = [item for item in items if isinstance(item, str)]
-            if path not in items:
-                items.append(path)
+            stored = str(path)
+            if stored not in items:
+                items.append(stored)
             self._state["extras"] = items
-            self._state["selected"] = f"extra:{Path(path)}"
+            self._remember_from(path, self._fresh_config())
+            self._clear_plan()
             self._save()
 
-    def _set_pack(self, payload: dict[str, object]) -> None:
-        raw = str(payload.get("path") or "").strip()
-        path = Path(raw).expanduser()
-        if not raw or not path.exists():
+    def _set_from(self, payload: dict[str, object]) -> None:
+        cfg = self._fresh_config()
+        path = self._path_from_payload(payload, cfg)
+        if not path.is_dir():
             raise DeskError("That folder is not on disk.")
         with self._lock:
-            self.pack = path
+            self._remember_from(path, cfg)
             self._clear_plan()
-            self.message = path.name
+            self._save()
 
-    def _clear_pack(self, payload: dict[str, object]) -> None:
+    def _set_to(self, payload: dict[str, object]) -> None:
+        cfg = self._fresh_config()
+        path = self._path_from_payload(payload, cfg)
+        if path.exists() and not path.is_dir():
+            raise DeskError("The destination has to be a folder.")
+        if not path.exists() and not path.parent.exists():
+            raise DeskError("The destination's parent folder is not on disk.")
+        with self._lock:
+            self._state["to_path"] = str(path)
+            self._clear_plan()
+            self._save()
+
+    def _clear_from(self, payload: dict[str, object]) -> None:
         del payload
         with self._lock:
             self.pack = None
+            self._state["from_path"] = ""
             self._clear_plan()
+            self._save()
+
+    def _clear_to(self, payload: dict[str, object]) -> None:
+        del payload
+        with self._lock:
+            self._state["to_path"] = ""
+            self._clear_plan()
+            self._save()
+
+    def _swap_ends(self, payload: dict[str, object]) -> None:
+        del payload
+        cfg = self._fresh_config()
+        source = self._from_path(cfg)
+        dest = self._to_path(cfg)
+        with self._lock:
+            self._state["from_path"] = "" if dest is None else str(dest)
+            self._state["to_path"] = "" if source is None else str(source)
+            self.pack = dest
+            self._clear_plan()
+            self._save()
+
+    def _path_from_payload(self, payload: dict[str, object], cfg: Config) -> Path:
+        ident = str(payload.get("id") or "")
+        if ident:
+            row = next((item for item in self._folders(cfg) if item["id"] == ident), None)
+            if row is None:
+                raise DeskError("That folder is not in the list.")
+            return Path(row["path"])
+        raw = str(payload.get("path") or "")
+        if not raw.strip():
+            raise DeskError("Choose a folder first.")
+        return _clean_path(raw)
+
+    def _remember_from(self, path: Path, cfg: Config) -> None:
+        self.pack = path
+        self._state["from_path"] = str(path)
+        match = next(
+            (row for row in self._folders(cfg) if _same_path(Path(row["path"]), path)),
+            None,
+        )
+        if match is not None:
+            self._state["selected"] = match["id"]
+
+    def _from_path(self, cfg: Config) -> Path | None:
+        del cfg
+        raw = self._state.get("from_path")
+        if isinstance(raw, str):
+            return _clean_path(raw) if raw.strip() else self.pack
+        return self.pack
+
+    def _to_path(self, cfg: Config) -> Path | None:
+        raw = self._state.get("to_path")
+        if isinstance(raw, str):
+            return _clean_path(raw) if raw.strip() else None
+        return cfg.root
+
+    def _flow_for(self, cfg: Config, source: Path | None, dest: Path | None) -> Flow:
+        flow = describe_flow(source, dest, cfg)
+        if flow.blocked:
+            return flow
+        note = _MODE_NOTES.get(self._active_mode(), "")
+        if not note:
+            return flow
+        return Flow(flow.id, flow.title, f"{flow.detail} {note}", False, flow.creates_dest)
 
     def _set_tags(self, payload: dict[str, object]) -> None:
         which = "title" if payload.get("which") == "title" else "meta"
@@ -776,19 +1062,13 @@ class Desk:
 
     def _organize_plan(self, cfg: Config) -> tuple[planner.Plan, str]:
         with self._lock:
-            source = self.pack
-            selected = str(self._state.get("selected") or "")
+            source = self._from_path(cfg)
+            dest = self._to_path(cfg)
             mode = self._active_mode()
             tags = self._pair("meta")
-            rows = self._folders(cfg)
-        if source is None:
-            row = next((item for item in rows if item["id"] == selected), None)
-            if row is None:
-                raise DeskError("Choose a pack, or a folder in the library.")
-            source = Path(row["path"])
-        if not source.exists():
-            raise DeskError(f"{source} is not on disk.")
-        dest = self._destination(cfg, rows, selected, mode)
+            flow = self._flow_for(cfg, source, dest)
+        if flow.blocked or source is None or dest is None:
+            raise DeskError(flow.detail)
         staging = Path(tempfile.mkdtemp(prefix="staging-", dir=self._staging_root()))
         conn = self.connect()
         try:
@@ -800,16 +1080,16 @@ class Desk:
                     result.items, conn, prompts, use_clap=cfg.clap_enabled
                 )
                 result.warnings.extend(warnings)
-                router: planner.Router = planner.sort_router(cfg, verdicts)
+                router: planner.Router = _rebase_router(
+                    planner.sort_router(cfg, verdicts), cfg.root, dest
+                )
                 kind = "ingest"
             else:
-                tags = self._pair("meta")
-                router = _structure_router(
-                    mode, dest, source, tags["genre"], tags["mood"]
-                )
+                router = _structure_router(mode, dest, source, tags["genre"], tags["mood"])
                 kind = mode
             copy_roots = [cfg.splice_folder] if cfg.keep_originals else []
             plan = planner.build_plan(result.items, cfg, router, copy_roots, verdicts, conn)
+            plan.notes.insert(0, flow.detail)
             plan.notes.extend(result.warnings)
             return plan, kind
         finally:
@@ -937,6 +1217,7 @@ class Desk:
         self._plan = None
         self._plan_kind = ""
         self._summary = {}
+        self.message = ""
         if self.phase != "running":
             self.phase = "idle"
 
@@ -1013,9 +1294,9 @@ class Desk:
 
     def _analyze(self, payload: dict[str, object]) -> None:
         del payload
-        source = self.pack
-        if source is None:
-            raise DeskError("Choose a pack first.")
+        source = self._from_path(self._fresh_config())
+        if source is None or not source.is_dir():
+            raise DeskError("Choose a From folder first.")
         cfg = self._fresh_config()
         staging = Path(tempfile.mkdtemp(prefix="staging-", dir=self._staging_root()))
         conn = self.connect()
@@ -1097,6 +1378,27 @@ class Desk:
         names = [Path(match[1]["current_path"]).name for match in matches]
         with self._lock:
             self.message = "Sounds like " + ", ".join(names)
+
+
+def _rebase_router(inner: planner.Router, root: Path, dest: Path) -> planner.Router:
+    """Keep absolute preset folders, and land library-relative folders under To."""
+    root_resolved = root.expanduser().resolve()
+    dest_resolved = dest.expanduser().resolve()
+    if root_resolved == dest_resolved:
+        return inner
+
+    def route(item: Item) -> tuple[Path, str, float] | None:
+        routed = inner(item)
+        if routed is None:
+            return None
+        folder, label, confidence = routed
+        try:
+            relative = folder.expanduser().resolve().relative_to(root_resolved)
+        except ValueError:
+            return routed
+        return dest_resolved / relative, label, confidence
+
+    return route
 
 
 def _structure_router(

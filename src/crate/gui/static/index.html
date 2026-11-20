@@ -39,15 +39,30 @@
       </section>
 
       <section class="panel crate" data-screens="organize">
-        <div class="shot">
-          <div class="mark" aria-hidden="true">
-            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-          </div>
+        <div class="ends">
+          <article class="end" id="from-drop">
+            <p class="kicker">From</p>
+            <h2 id="from-name">Choose a folder</h2>
+            <p class="end-path" id="from-path">The folder Callima reads.</p>
+            <div class="end-actions">
+              <button type="button" class="choose" id="choose-from">Choose</button>
+              <button type="button" class="choose" id="clear-from">Clear</button>
+            </div>
+          </article>
+          <button type="button" class="swap" id="swap-ends" aria-label="Swap from and to">↔</button>
+          <article class="end" id="to-drop">
+            <p class="kicker">To</p>
+            <h2 id="to-name">Library</h2>
+            <p class="end-path" id="to-path">Where the files land.</p>
+            <div class="end-actions">
+              <button type="button" class="choose" id="choose-to">Choose</button>
+              <button type="button" class="choose" id="clear-to">Clear</button>
+            </div>
+          </article>
         </div>
-        <h2 id="crate-title">The crate</h2>
-        <p id="crate-copy">Sleeves, packs, and folders land here.</p>
-        <button type="button" class="choose" id="choose-pack">Choose a pack</button>
+        <p class="flow-line" id="flow-line"></p>
         <ol class="plan" id="plan"></ol>
+        <ol class="flows" id="flows"></ol>
       </section>
 
       <section class="panel dividers" data-screens="structure">

@@ -4,10 +4,12 @@ let state = null;
 let screen = "organize";
 let toolsOpen = false;
 let pickedFile = "";
+let pickedId = "";
+let draggingId = "";
 let poll = 0;
 
 const copy = {
-  organize: "Drop a pack in the zone. Callima files it into the destination using these tags and the structure you pick.",
+  organize: "Drop a library folder onto From or To, or select one and press Enter. Enter fills an empty To first, then From. Choose still opens a folder.",
   structure: "Type files one-shots and loops by sound. Genre, Flat, and Original keep a pack the way it arrived. Custom is one you build.",
   cleanup: "Analysis files are Ableton .asd sidecars. Duplicates are the same audio saved twice. Least used stays visible until you decide.",
 };
@@ -65,14 +67,11 @@ function render(next) {
   state = next;
   document.getElementById("status").textContent = next.status || "";
   const dest = document.getElementById("dest-path");
-  dest.textContent = next.destination.path;
-  dest.title = next.destination.path;
+  dest.textContent = next.ends.detail;
+  dest.title = next.ends.to ? next.ends.to.path : "";
+  document.querySelector(".destination").textContent = next.ends.title;
   document.getElementById("structure-jump").textContent = labelFor(next.structure.mode);
-  const pack = next.pack;
-  document.getElementById("crate-title").textContent = pack ? pack.name : "The crate";
-  document.getElementById("crate-copy").textContent = pack
-    ? pack.path
-    : next.notice || "Sleeves, packs, and folders land here.";
+  paintEnds(next);
   paintLibrary(next);
   paintSaved(next);
   paintFiles(next);
@@ -90,16 +89,66 @@ function labelFor(mode) {
   return (modes.find((item) => item[0] === mode) || ["", "Select"])[1];
 }
 
+function paintEnds(next) {
+  const from = next.ends.from;
+  const to = next.ends.to;
+  document.getElementById("from-name").textContent = from ? from.name : "Choose a folder";
+  const fromPath = document.getElementById("from-path");
+  fromPath.textContent = from ? from.path : "Drop a folder, or choose one.";
+  fromPath.title = from ? from.path : "";
+  document.getElementById("to-name").textContent = to ? to.name : "Choose a folder";
+  const toPath = document.getElementById("to-path");
+  toPath.textContent = to ? to.path : "Drop a folder, or choose one.";
+  toPath.title = to ? to.path : "";
+  const line = document.getElementById("flow-line");
+  line.textContent = next.notice ? `${next.ends.detail} ${next.notice}` : next.ends.detail;
+  line.classList.toggle("blocked", Boolean(next.ends.blocked));
+  const list = document.getElementById("flows");
+  list.replaceChildren();
+  for (const flow of next.flows) {
+    const item = el("li");
+    item.className = flow.active ? (flow.blocked ? "active blocked" : "active") : "";
+    item.append(el("b", "", flow.title), document.createTextNode(` ${flow.detail}`));
+    list.append(item);
+  }
+}
+
 function paintLibrary(next) {
   const box = document.getElementById("library");
+  const focused = document.activeElement && document.activeElement.dataset.id;
+  if (pickedId && !next.library.some((folder) => folder.id === pickedId)) pickedId = "";
   box.replaceChildren();
   for (const folder of next.library) {
-    const button = el("button", "folder", folder.name);
+    const button = el("button", "folder");
     button.type = "button";
-    button.setAttribute("aria-pressed", folder.selected ? "true" : "false");
-    button.addEventListener("click", () => act("select-folder", { id: folder.id }));
+    button.dataset.id = folder.id;
+    button.draggable = true;
+    const marks = [folder.from ? "From" : "", folder.to ? "To" : ""].filter(Boolean).join(" · ");
+    button.setAttribute("aria-pressed", folder.id === pickedId ? "true" : "false");
+    button.setAttribute("aria-label", marks ? `${folder.name}, ${marks}` : folder.name);
+    button.append(el("span", "", folder.name), el("span", "role", marks));
+    button.addEventListener("click", () => {
+      pickedId = folder.id;
+      paintLibrary(state);
+    });
+    button.addEventListener("dragstart", (event) => {
+      draggingId = folder.id;
+      pickedId = folder.id;
+      event.dataTransfer.setData("text/plain", folder.id);
+      event.dataTransfer.effectAllowed = "copy";
+    });
+    button.addEventListener("dragend", () => {
+      draggingId = "";
+    });
     box.append(button);
+    if (folder.id === focused) button.focus();
   }
+}
+
+function assignPicked() {
+  if (!pickedId || !state) return;
+  const action = state.ends.to ? "set-from" : "set-to";
+  return act(action, { id: pickedId });
 }
 
 function paintSaved(next) {
@@ -241,7 +290,7 @@ function paintDetails(next) {
   tools.append(reviewHead);
   tools.append(actionButton("Undo last batch", () => act("undo", {})));
   tools.append(actionButton(next.notice ? "Stop watching Splice" : "Watch Splice", () => act("watch", {})));
-  tools.append(actionButton("Analyze the pack", () => act("analyze", {})));
+  tools.append(actionButton("Analyze the From folder", () => act("analyze", {})));
   tools.append(actionButton("Re-file this folder", () => act("go", { screen: "organize" })));
   tools.append(actionButton("Index Ableton projects", indexProjects));
   tools.append(actionButton("Score a labels CSV", scoreCsv));
@@ -272,9 +321,11 @@ function actionButton(text, onClick) {
 function paintGo(next) {
   const go = document.getElementById("go");
   const ready = next.phase === "ready";
+  const blocked = Boolean(next.ends.blocked) && !ready;
   go.textContent = next.phase === "running" ? "…" : ready ? "Apply" : "Go";
   go.classList.toggle("apply", ready);
-  go.disabled = next.phase === "running";
+  go.disabled = next.phase === "running" || blocked;
+  go.title = blocked ? next.ends.detail : "";
 }
 
 function showScreen(name) {
@@ -337,14 +388,20 @@ document.getElementById("add-folder").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("choose-pack").addEventListener("click", async () => {
+document.getElementById("choose-from").addEventListener("click", () => pickEnd("From folder", "set-from"));
+document.getElementById("choose-to").addEventListener("click", () => pickEnd("To folder", "set-to"));
+document.getElementById("clear-from").addEventListener("click", () => act("clear-from", {}).catch(showError));
+document.getElementById("clear-to").addEventListener("click", () => act("clear-to", {}).catch(showError));
+document.getElementById("swap-ends").addEventListener("click", () => act("swap-ends", {}).catch(showError));
+
+async function pickEnd(prompt, action) {
   try {
-    const picked = await api("/api/pick", { prompt: "Pack to file" });
-    if (picked.path) await act("set-pack", { path: picked.path });
+    const picked = await api("/api/pick", { prompt });
+    if (picked.path) await act(action, { path: picked.path });
   } catch (error) {
     showError(error);
   }
-});
+}
 
 document.getElementById("add-file").addEventListener("click", async () => {
   try {
@@ -398,10 +455,44 @@ document.getElementById("reset").addEventListener("click", () => {
   act("reset-settings", {}).catch(showError);
 });
 
+function bindDrop(id, action) {
+  const node = document.getElementById(id);
+  node.addEventListener("dragover", (event) => {
+    if (!draggingId) return;
+    event.preventDefault();
+    node.classList.add("drop");
+  });
+  node.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget && node.contains(event.relatedTarget)) return;
+    node.classList.remove("drop");
+  });
+  node.addEventListener("drop", (event) => {
+    event.preventDefault();
+    node.classList.remove("drop");
+    const folderId = draggingId || event.dataTransfer.getData("text/plain");
+    draggingId = "";
+    if (folderId) act(action, { id: folderId }).catch(showError);
+  });
+}
+
+bindDrop("from-drop", "set-from");
+bindDrop("to-drop", "set-to");
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state && state.phase === "ready") {
     act("cancel", {}).catch(showError);
+    return;
   }
-});
+  if (event.key !== "Enter" || event.repeat || screen !== "organize") return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+  const folder = target instanceof Element ? target.closest(".folder") : null;
+  if (!folder && target instanceof Element && target.closest("button, a")) return;
+  const id = folder ? folder.dataset.id : pickedId;
+  if (!id) return;
+  event.preventDefault();
+  pickedId = id;
+  assignPicked().catch(showError);
+}, true);
 
 refresh().catch(showError);
