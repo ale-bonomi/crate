@@ -51,6 +51,29 @@ def test_window_serves_the_page(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_added_folder_and_library_packs_show_up(tmp_path: Path) -> None:
+    library = tmp_path / "library"
+    (library / "Vengeance Packs").mkdir(parents=True)
+    (library / "One Shots").mkdir()
+    outside = tmp_path / "Loose"
+    (outside / "Kit").mkdir(parents=True)
+    home = tmp_path / "home"
+    desk = Desk(home=home, config_path=home / "config.yaml")
+    save_config(
+        Config(library_roots=[library], splice_folder=tmp_path / "splice", clap_enabled=False),
+        desk.config_path,
+    )
+    names = [row["name"] for row in desk.snapshot()["library"]]
+    assert names[:4] == [library.name, "splice", "One Shots", "Vengeance Packs"]
+
+    added = desk.action("add-folder", {"path": str(outside) + "/"})
+    names = [row["name"] for row in added["library"]]
+    assert "Loose" in names
+    assert "Kit" in names
+    assert added["ends"]["from"]["path"] == str(outside)
+    assert names.count(library.name) == 1
+
+
 def test_every_from_to_pairing_has_a_flow(tmp_path: Path) -> None:
     library = tmp_path / "library"
     library.mkdir()

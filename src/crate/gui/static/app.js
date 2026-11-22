@@ -6,6 +6,7 @@ let toolsOpen = false;
 let pickedFile = "";
 let pickedId = "";
 let draggingId = "";
+let revealFrom = false;
 let poll = 0;
 
 const copy = {
@@ -142,6 +143,10 @@ function paintLibrary(next) {
     });
     box.append(button);
     if (folder.id === focused) button.focus();
+    if (revealFrom && folder.from) {
+      button.scrollIntoView({ block: "nearest" });
+      revealFrom = false;
+    }
   }
 }
 
@@ -382,7 +387,10 @@ document.getElementById("info").addEventListener("click", () => {
 document.getElementById("add-folder").addEventListener("click", async () => {
   try {
     const picked = await api("/api/pick", { prompt: "Add a library folder" });
-    if (picked.path) await act("add-folder", { path: picked.path });
+    if (picked.path) {
+      revealFrom = true;
+      await act("add-folder", { path: picked.path });
+    }
   } catch (error) {
     showError(error);
   }

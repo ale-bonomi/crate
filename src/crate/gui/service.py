@@ -41,14 +41,6 @@ _UNSAFE = re.compile(r"[\\/:\0]+")
 _MODES = ("type", "genre", "flat", "original", "random", "custom")
 _STYLES = ("keep", "lowercase", "tagged")
 _BINS = ("Bin A", "Bin B", "Bin C", "Bin D")
-_LIBRARY_FOLDERS = {
-    "One Shots",
-    "Loops",
-    "MIDI",
-    "_Review",
-    "_Duplicates",
-    "_Presets Unsorted",
-}
 _PRESET_LABELS = {
     ".fxp": "Serum",
     "serum": "Serum 1",
@@ -112,6 +104,23 @@ def _strip_quotes(cfg: Config) -> bool:
     if changed:
         cfg.non_audio.presets = presets
     return changed
+
+
+def _visible_dirs(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        return []
+    try:
+        children = list(folder.iterdir())
+    except OSError:
+        return []
+    return sorted(path for path in children if path.is_dir() and not path.name.startswith("."))
+
+
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve())
+    except OSError:
+        return str(path.expanduser())
 
 
 def _slug(text: str) -> str:
@@ -632,55 +641,41 @@ class Desk:
         return items or cast(list[dict[str, str]], _default_state()["structures"])
 
     def _folders(self, cfg: Config) -> list[dict[str, str]]:
-        rows: list[dict[str, str]] = [
-            {
-                "id": "splice",
-                "name": "Splice",
-                "path": str(cfg.splice_folder.expanduser()),
-                "kind": "source",
-            }
-        ]
-        root = cfg.root
-        children: list[Path] = []
-        if root.exists():
-            children = sorted(
-                path
-                for path in root.iterdir()
-                if path.is_dir() and not path.name.startswith(".") and path.name in _LIBRARY_FOLDERS
-            )
-        if children:
-            rows.extend(
+        rows: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add(path: Path, ident: str, kind: str) -> None:
+            key = _path_key(path)
+            if key in seen:
+                return
+            seen.add(key)
+            rows.append(
                 {
-                    "id": f"child:{path.name}",
-                    "name": path.name,
+                    "id": ident,
+                    "name": path.name or "Library",
                     "path": str(path),
-                    "kind": "library",
+                    "kind": kind,
                 }
-                for path in children
             )
-        rows.insert(
-            0,
-            {
-                "id": "root",
-                "name": root.name or "Library",
-                "path": str(root),
-                "kind": "library",
-            },
-        )
+
+        root = cfg.root
+        add(root, "root", "library")
+        add(cfg.splice_folder.expanduser(), "splice", "source")
         extras = self._state.get("extras")
+        extra_paths: list[Path] = []
         if isinstance(extras, list):
             for item in extras:
-                if not isinstance(item, str) or not item:
+                if not isinstance(item, str) or not item.strip():
                     continue
-                path = Path(item)
-                rows.append(
-                    {
-                        "id": f"extra:{path}",
-                        "name": path.name or str(path),
-                        "path": str(path),
-                        "kind": "library",
-                    }
-                )
+                extra_paths.append(_clean_path(item))
+        for path in extra_paths:
+            add(path, f"extra:{path}", "library")
+            if _same_path(path, root) or _strictly_within(path, root):
+                continue
+            for child in _visible_dirs(path):
+                add(child, f"extra:{child}", "library")
+        for child in _visible_dirs(root):
+            add(child, f"child:{child}", "library")
         return rows
 
     def _files(self, cfg: Config) -> list[dict[str, str]]:
