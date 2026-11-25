@@ -11,7 +11,7 @@ from pathlib import Path
 from .analyze import metadata
 from .analyze.types import Verdict
 from .config import Category, Config
-from .dedupe import library_copy, near_copies
+from .dedupe import identify, library_copy, near_copies, scan_tree
 from .hashing import file_hash
 from .naming import filename_from_template, template_values
 from .scan import AUDIO_EXT, Item
@@ -425,3 +425,71 @@ def _same_content(a: Path, b: Path) -> bool:
         return file_hash(a) == file_hash(b)
     except OSError:
         return False
+
+
+def keeper_of(paths: list[Path], root: Path) -> Path:
+    """The copy to keep: the first one inside the library, else the first one found."""
+    root = root.expanduser().resolve()
+    for path in paths:
+        try:
+            if path.resolve().is_relative_to(root):
+                return path
+        except OSError:
+            continue
+    return paths[0]
+
+
+def duplicate_plan(
+    conn: sqlite3.Connection, cfg: Config, roots: list[Path], mode: str | None = None
+) -> Plan:
+    """Exact copies under `roots`, resolved per `mode` (default: the `duplicates` setting).
+
+    Symlinks and files already in `_Duplicates/` are earlier resolutions, so they are left
+    alone. Near-duplicates become notes and are never moved.
+    """
+    mode = mode or cfg.duplicates
+    quarantine = (cfg.root / "_Duplicates").resolve()
+    plan = Plan()
+    groups: dict[str, list[Path]] = {}
+    prints: dict[str, list[tuple[Path, str | None]]] = {}
+    for path in scan_tree(roots):
+        if path.is_symlink() or path.resolve().is_relative_to(quarantine):
+            continue
+        content, raw, finger = identify(conn, path)
+        key = content or raw
+        if key:
+            groups.setdefault(key, []).append(path)
+        if finger:
+            prints.setdefault(finger, []).append((path, content))
+
+    taken: set[Path] = set()
+    for paths in groups.values():
+        if len(paths) < 2:
+            continue
+        kept = keeper_of(paths, cfg.root)
+        for extra in paths:
+            if extra == kept:
+                continue
+            if mode == "keep":
+                plan.notes.append(f"{extra} is a copy of {kept}; left in place")
+                continue
+            if mode == "quarantine":
+                dst = cfg.root / "_Duplicates" / extra.name
+                if dst in taken or dst.exists():
+                    dst = _unique(dst, taken)
+                taken.add(dst)
+                op = PlannedOp(
+                    extra, dst, "quarantine", "duplicate", 1.0, str(extra), None,
+                    dst.name != extra.name,
+                )  # fmt: skip
+            else:
+                op = PlannedOp(extra, kept, mode, "duplicate", 1.0, str(extra), None)
+            op.kept = kept
+            plan.ops.append(op)
+
+    for entries in prints.values():
+        hashes = {content for _, content in entries if content}
+        if len(hashes) >= 2:
+            shown = ", ".join(str(path) for path, _content in entries)
+            plan.notes.append(f"near-duplicate, left in place: {shown}")
+    return plan

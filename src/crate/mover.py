@@ -149,6 +149,8 @@ def _loop_flag(value: bool | None) -> int | None:
 
 
 def _track(conn: sqlite3.Connection, op: PlannedOp, h: str | None) -> None:
+    if op.mode == "trash":
+        conn.execute("DELETE FROM files WHERE current_path=?", (str(op.src),))
     if op.mode in {"trash", "symlink"} or op.sidecar:
         conn.commit()
         return
