@@ -47,6 +47,10 @@ class PlannedOp:
     feel: str | None = None
     wet: str | None = None
     label_source: str | None = None
+    # trash/symlink of a duplicate: the copy that must still exist before this one goes
+    kept: Path | None = None
+    # the op in this same plan that files the kept copy; its dst can change after planning
+    keeper: PlannedOp | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -150,7 +154,7 @@ def build_plan(
     copy_roots = [r.expanduser().resolve() for r in copy_roots]
     plan.prune_roots = sorted({it.root for it in items if not it.staged})
     verdicts = verdicts or {}
-    seen_hash: dict[str, Path] = {}
+    seen_hash: dict[str, PlannedOp] = {}
     seen_print: dict[str, Path] = {}
 
     for item in items:
@@ -171,8 +175,10 @@ def build_plan(
             continue
 
         hit: Path | None = None
+        keeper: PlannedOp | None = None
         if identity and identity in seen_hash:
-            hit = seen_hash[identity]
+            keeper = seen_hash[identity]
+            hit = keeper.dst
         elif conn is not None and verdict is not None:
             hit = library_copy(conn, verdict.content_hash, verdict.raw_hash, src)
 
@@ -183,7 +189,7 @@ def build_plan(
             plan.skipped.append((item.original, f"already in library at {hit}"))
             continue
         if hit is not None and cfg.duplicates != "keep":
-            _add_duplicate(plan, item, verdict, hit, cfg, taken)
+            _add_duplicate(plan, item, verdict, hit, cfg, taken, keeper)
             continue
 
         if verdict is not None and verdict.fingerprint and conn is not None:
@@ -220,7 +226,7 @@ def build_plan(
         _fill(op, verdict)
         plan.ops.append(op)
         if identity and hit is None:
-            seen_hash[identity] = dst
+            seen_hash[identity] = op
         if verdict is not None and verdict.fingerprint and verdict.content_hash:
             seen_print.setdefault(verdict.fingerprint, dst)
 
@@ -244,7 +250,16 @@ def build_plan(
                 )
 
     _apply_splits(plan, cfg)
+    _follow_keepers(plan)
     return plan
+
+
+def _follow_keepers(plan: Plan) -> None:
+    """Splits and collisions can move a kept copy after its duplicates were planned."""
+    for op in plan.ops:
+        if op.keeper is not None:
+            op.dst = op.keeper.dst
+            op.kept = op.keeper.dst
 
 
 def _dest_name(
@@ -293,6 +308,7 @@ def _add_duplicate(
     hit: Path,
     cfg: Config,
     taken: set[Path],
+    keeper: PlannedOp | None = None,
 ) -> None:
     src = item.path
     if cfg.duplicates == "quarantine":
@@ -305,8 +321,10 @@ def _add_duplicate(
         )
     elif cfg.duplicates == "symlink":
         op = PlannedOp(src, hit, "symlink", "duplicate", 1.0, item.original, item.pack)
+        op.kept, op.keeper = hit, keeper
     else:
         op = PlannedOp(src, hit, "trash", "duplicate", 1.0, item.original, item.pack)
+        op.kept, op.keeper = hit, keeper
     _fill(op, verdict)
     plan.ops.append(op)
 

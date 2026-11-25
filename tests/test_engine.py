@@ -10,6 +10,7 @@ from crate import db, mover, planner
 from crate.analyze.engine import annotate
 from crate.config import Config
 from crate.scan import scan
+from tests.synth import kick, write_wav
 
 
 def snapshot(root: Path) -> dict[str, str]:
@@ -134,3 +135,108 @@ def test_copy_mode_keeps_originals(world):
     mover.execute(conn, plan, "sort", lib)
     assert (inbox / "My Pack/Kicks/Kick_01.wav").exists()
     assert (lib / "One Shots/Kicks/Kick_01.wav").read_bytes() == b"kick-one"
+
+
+def _kick_wav(path: Path) -> bytes:
+    write_wav(path, kick(), 22050)
+    return path.read_bytes()
+
+
+@pytest.fixture
+def dupes(world):
+    """The same kick twice in one pack, under two names."""
+    tmp, inbox, lib, cfg, conn = world
+    kicks = inbox / "My Pack" / "Kicks"
+    _kick_wav(kicks / "Kick_01.wav")
+    _kick_wav(kicks / "Kick_01 copy.wav")
+    return world
+
+
+def _plan(world):
+    return run(world, apply=False)[1]
+
+
+KICK_NAMES = {"Kick_01.wav", "Kick_01 copy.wav"}
+
+
+def _pair(plan):
+    """(op that files the kept kick, op that resolves its duplicate)."""
+    ops = [o for o in plan.ops if o.src.name in KICK_NAMES and not o.sidecar]
+    keeper = next(o for o in ops if o.mode == "move")
+    dupe = next(o for o in ops if o is not keeper)
+    return keeper, dupe
+
+
+@pytest.mark.parametrize("mode", ["quarantine", "symlink"])
+def test_duplicates_in_one_pack_apply_then_undo(dupes, mode):
+    tmp, inbox, lib, cfg, conn = dupes
+    cfg.duplicates = mode
+    before = snapshot(inbox)
+    audio = (inbox / "My Pack" / "Kicks" / "Kick_01.wav").read_bytes()
+    _, plan, batch = run(dupes)
+    keeper, dupe = _pair(plan)
+    assert keeper.dst.read_bytes() == audio
+    if mode == "symlink":
+        assert dupe.src.is_symlink() and dupe.src.resolve() == keeper.dst.resolve()
+    else:
+        assert dupe.dst.parent == lib / "_Duplicates" and dupe.dst.read_bytes() == audio
+
+    assert mover.undo(conn, batch, trash=lambda p: Path(p).unlink()) == []
+    assert snapshot(inbox) == before
+
+
+def test_duplicate_in_one_pack_is_trashed(dupes):
+    tmp, inbox, lib, cfg, conn = dupes
+    plan = _plan(dupes)
+    keeper, dupe = _pair(plan)
+    assert dupe.mode == "trash" and dupe.kept == keeper.dst
+    trashed: list[str] = []
+
+    def trash(p: str) -> None:
+        trashed.append(p)
+        Path(p).unlink()
+
+    batch = mover.execute(conn, plan, "sort", lib, trash=trash)
+    assert trashed == [str(dupe.src)]
+    assert keeper.dst.exists()
+    warnings = mover.undo(conn, batch, trash=lambda p: Path(p).unlink())
+    assert any("Trash" in w for w in warnings)  # a trashed file is restored by hand
+    assert keeper.src.exists()
+
+
+def test_duplicate_follows_kept_copy_into_split_folder(dupes):
+    tmp, inbox, lib, cfg, conn = dupes
+    cfg.duplicates = "symlink"
+    cfg.split_folder_threshold = 0  # force Kicks/ to split by punch
+    plan = _plan(dupes)
+    keeper, dupe = _pair(plan)
+    assert keeper.dst.parent.parent == lib / "One Shots/Kicks"  # moved into a subfolder
+    assert dupe.dst == dupe.kept == keeper.dst
+    mover.execute(conn, plan, "sort", lib)
+    assert dupe.src.resolve() == keeper.dst.resolve()
+
+
+def test_duplicate_of_library_file_is_trashed(dupes):
+    tmp, inbox, lib, cfg, conn = dupes
+    cfg.duplicates = "keep"
+    run(dupes)  # both kicks land in the library and are indexed
+    cfg.duplicates = "trash"
+    again = inbox / "Again" / "Kick_01.wav"
+    _kick_wav(again)
+    _, plan, _ = run(dupes, apply=False)
+    dupe = next(o for o in plan.ops if o.src == again)
+    assert dupe.mode == "trash" and dupe.kept is not None and dupe.kept.exists()
+    mover.execute(conn, plan, "sort", lib, trash=lambda p: Path(p).unlink())
+    assert not again.exists()
+
+
+def test_trash_refuses_when_kept_copy_is_gone(dupes):
+    tmp, inbox, lib, cfg, conn = dupes
+    plan = _plan(dupes)
+    keeper, dupe = _pair(plan)
+    plan.ops = [o for o in plan.ops if o is not keeper]  # the kept copy never lands
+    trashed: list[str] = []
+    with pytest.raises(mover.MoveError, match="kept copy is missing"):
+        mover.execute(conn, plan, "sort", lib, trash=trashed.append)
+    assert trashed == []
+    assert dupe.src.exists()

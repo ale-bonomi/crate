@@ -94,9 +94,14 @@ def execute(
 
     try:
         for op in plan.ops:
-            if op.dst.exists():
-                raise MoveError(f"destination appeared since planning: {op.dst}")
-            ensure_dir(op.dst.parent)
+            if op.mode in {"trash", "symlink"}:
+                # dst is the library copy (or a placeholder), so it is meant to exist.
+                if op.kept is not None and not op.kept.exists():
+                    raise MoveError(f"kept copy is missing, so {op.src} was left alone: {op.kept}")
+            else:
+                if op.dst.exists():
+                    raise MoveError(f"destination appeared since planning: {op.dst}")
+                ensure_dir(op.dst.parent)
             seq += 1
             oid = _log(conn, batch, seq, op.mode, op.src, op.dst, op.original)
             h = _perform(op, trash)

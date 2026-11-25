@@ -12,6 +12,8 @@ from .scan import ScanResult
 
 
 def _note(op: PlannedOp) -> str:
+    if op.mode in {"trash", "symlink"} and op.kept is not None:
+        return f"duplicate of {op.kept.name}"
     if op.renamed:
         return "renamed (collision)"
     original = Path(op.original).name

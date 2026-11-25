@@ -1139,7 +1139,7 @@ class Desk:
                 fake = extra.with_name(extra.name + ".crate-trash")
                 plan.ops.append(
                     planner.PlannedOp(
-                        extra, fake, "trash", "duplicate", 1.0, extra.name, None
+                        extra, fake, "trash", "duplicate", 1.0, extra.name, None, kept=kept
                     )
                 )
         for entries in prints.values():
