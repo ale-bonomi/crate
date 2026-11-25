@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Callima</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app" data-screen="organize">
+    <header class="top">
+      <h1>Callima</h1>
+      <p class="status" id="status"></p>
+      <button type="button" class="pill" id="settings-toggle">Settings</button>
+    </header>
+
+    <main class="body">
+      <section class="panel library" data-screens="organize">
+        <h2>Library</h2>
+        <div class="stack" id="library"></div>
+        <button type="button" class="text-button" id="add-folder">+ Add folder</button>
+      </section>
+
+      <section class="panel library" data-screens="structure">
+        <h2>Saved</h2>
+        <div class="stack" id="saved"></div>
+        <form class="new-structure" id="new-structure">
+          <input id="structure-name" type="text" placeholder="Name" autocomplete="off">
+          <button type="submit" class="text-button">+ New structure</button>
+        </form>
+      </section>
+
+      <section class="panel library" data-screens="cleanup">
+        <form class="search" id="search-form">
+          <input id="search" type="search" placeholder="Search files" autocomplete="off">
+          <button type="button" class="link" id="add-file">Add</button>
+        </form>
+        <div class="stack" id="files"></div>
+      </section>
+
+      <section class="panel crate" data-screens="organize">
+        <div class="ends">
+          <article class="end" id="from-drop">
+            <p class="kicker">From</p>
+            <h2 id="from-name">Choose a folder</h2>
+            <p class="end-path" id="from-path">The folder Callima reads.</p>
+            <div class="end-actions">
+              <button type="button" class="choose" id="choose-from">Choose</button>
+              <button type="button" class="choose" id="clear-from">Clear</button>
+            </div>
+          </article>
+          <button type="button" class="swap" id="swap-ends" aria-label="Swap from and to">↔</button>
+          <article class="end" id="to-drop">
+            <p class="kicker">To</p>
+            <h2 id="to-name">Library</h2>
+            <p class="end-path" id="to-path">Where the files land.</p>
+            <div class="end-actions">
+              <button type="button" class="choose" id="choose-to">Choose</button>
+              <button type="button" class="choose" id="clear-to">Clear</button>
+            </div>
+          </article>
+        </div>
+        <p class="flow-line" id="flow-line"></p>
+        <ol class="plan" id="plan"></ol>
+        <ol class="flows" id="flows"></ol>
+      </section>
+
+      <section class="panel dividers" data-screens="structure">
+        <h2>Dividers</h2>
+        <div class="grid" id="modes"></div>
+      </section>
+
+      <section class="panel rules" data-screens="cleanup">
+        <h2>What leaves the crate</h2>
+        <div class="toggles">
+          <button type="button" class="toggle" data-flag="asd"><span>Delete analysis files (.asd)</span><em>On</em></button>
+          <button type="button" class="toggle" data-flag="duplicates"><span>Delete duplicate files</span><em>On</em></button>
+          <button type="button" class="toggle" data-flag="least"><span>Show least used files</span><em>On</em></button>
+        </div>
+      </section>
+
+      <section class="panel preferences" data-screens="settings">
+        <div id="settings-fields"></div>
+        <div class="settings-actions">
+          <button type="button" class="text-button" id="reset">Reset</button>
+          <button type="button" class="text-button strong" id="save">Save preferences</button>
+        </div>
+      </section>
+
+      <aside class="panel inspector" data-screens="organize structure cleanup">
+        <h2 class="destination">Destination</h2>
+        <p class="dest-path" id="dest-path"></p>
+        <div class="row">
+          <span class="chip">Structure</span>
+          <button type="button" class="chip grow select" id="structure-jump"></button>
+        </div>
+        <div data-screens="organize" class="tag-block">
+          <h3>Meta tags</h3>
+          <div class="row" data-which="meta" data-field="genre">
+            <span class="chip">Genre</span>
+            <input class="chip grow" placeholder="House" aria-label="Meta genre">
+            <button type="button" class="plus" aria-label="Focus genre">+</button>
+          </div>
+          <div class="row" data-which="meta" data-field="mood">
+            <span class="chip">Mood</span>
+            <input class="chip grow" placeholder="Dreamy" aria-label="Meta mood">
+            <button type="button" class="plus" aria-label="Focus mood">+</button>
+          </div>
+          <h3>Title tags</h3>
+          <div class="row" data-which="title" data-field="genre">
+            <span class="chip">Genre</span>
+            <input class="chip grow" placeholder="House" aria-label="Title genre">
+            <button type="button" class="plus" aria-label="Focus title genre">+</button>
+          </div>
+          <div class="row" data-which="title" data-field="mood">
+            <span class="chip">Mood</span>
+            <input class="chip grow" placeholder="Dreamy" aria-label="Title mood">
+            <button type="button" class="plus" aria-label="Focus title mood">+</button>
+          </div>
+        </div>
+        <div class="details">
+          <div class="details-head">
+            <h3>Details</h3>
+            <button type="button" class="info" id="info" aria-expanded="false" aria-label="Tools">i</button>
+          </div>
+          <p id="details"></p>
+          <div class="tools" id="tools" hidden></div>
+        </div>
+      </aside>
+
+      <aside class="panel inspector" data-screens="settings">
+        <div class="details">
+          <div class="details-head"><h3>Details</h3><span class="info static">i</span></div>
+          <p>Each synth and DAW gets a folder. Presets land there, and the tag style is how new file names are written. Keep leaves names untouched, so Ableton can still find samples by filename.</p>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="bar" data-screens="organize structure cleanup">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-screen="organize">Organize</button>
+        <button type="button" role="tab" data-screen="structure">Structure</button>
+        <button type="button" role="tab" data-screen="cleanup">Clean Up</button>
+      </div>
+      <button type="button" class="go" id="go">Go</button>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
