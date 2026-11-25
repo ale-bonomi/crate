@@ -184,7 +184,7 @@ def _run(
         ctx, paths, kind, copy_roots=copy_roots, skip_dirs=skip_dirs
     )
     try:
-        show_plan(console, plan, result, apply)
+        show_plan(console, plan, result, apply, root=cfg.root)
         if not apply or not plan.ops:
             return
         batch = mover.execute(conn, plan, command, cfg.root)
@@ -405,7 +405,7 @@ def _commit_label(
         )
         from .render import show_plan
 
-        show_plan(console, plan, result, True)
+        show_plan(console, plan, result, True, root=cfg.root)
         if plan.ops:
             batch = mover.execute(conn, plan, "correct", cfg.root)
             console.print(f"[green]Labeled.[/] Batch {batch}.")
@@ -449,7 +449,7 @@ def correct(
         )
         from .render import show_plan
 
-        show_plan(console, plan, result, apply)
+        show_plan(console, plan, result, apply, root=cfg.root)
         if not apply:
             return
         identity = current.content_hash or current.raw_hash

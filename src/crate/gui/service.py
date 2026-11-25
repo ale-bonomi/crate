@@ -24,6 +24,7 @@ from ..analyze.types import Verdict
 from ..config import CRATE_HOME, Config, load_config, save_config
 from ..evaluate import read_labels, score
 from ..projects import index_projects, usage
+from ..render import target_text
 from ..scan import Item, scan
 from ..search import (
     features_for_hash,
@@ -1008,7 +1009,9 @@ class Desk:
             else:
                 plan, kind = self._organize_plan(cfg)
             self._stamp_titles(plan, cfg)
-            summary = _summarize(plan)
+            with self._lock:
+                shown_root = (self._to_path(cfg) if screen != "cleanup" else None) or cfg.root
+            summary = _summarize(plan, shown_root)
             with self._lock:
                 self._plan = plan
                 self._plan_kind = kind
@@ -1407,9 +1410,15 @@ def _titled_name(filename: str, genre: str, mood: str, style: str, label: str) -
     return stem + path.suffix.lower()
 
 
-def _summarize(plan: planner.Plan) -> dict[str, object]:
+def _summarize(plan: planner.Plan, root: Path) -> dict[str, object]:
     shown = [
-        {"src": op.src.name, "dst": str(op.dst), "mode": op.mode, "label": op.label}
+        {
+            "src": op.src.name,
+            "dst": target_text(op, root),
+            "path": str(op.dst),
+            "mode": op.mode,
+            "label": op.label,
+        }
         for op in plan.ops
         if not op.sidecar
     ]

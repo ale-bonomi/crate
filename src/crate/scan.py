@@ -114,7 +114,8 @@ def scan(inputs: list[Path], staging: Path, *, include_other: bool = False) -> S
             dirnames[:] = sorted(
                 d for d in dirnames if d not in JUNK_DIRS and not d.startswith(".")
             )
-            for fn in sorted(filenames):
+            # "Kick.wav" before "Kick copy.wav" and "Kick (1).wav": the first copy is kept
+            for fn in sorted(filenames, key=lambda name: (Path(name).stem, name)):
                 p = Path(dirpath) / fn
                 rel = p.relative_to(directory)
                 if is_junk(fn):

@@ -167,3 +167,23 @@ def test_type_folders_are_created_under_the_to_folder(tmp_path: Path) -> None:
     plan, kind = desk._organize_plan(desk.config())
     assert kind == "ingest"
     assert plan.ops[0].dst.parent == shelf / "MIDI"
+
+
+def test_plan_summary_shows_short_destinations(tmp_path: Path):
+    from crate import planner
+    from crate.gui.service import _summarize
+
+    root = tmp_path / "Library"
+    src = tmp_path / "Pack" / "Kick_01.wav"
+    plan = planner.Plan(
+        ops=[
+            planner.PlannedOp(src, root / "One Shots/Kicks/Kick_01.wav", "move", "kick", 0.9,
+                              str(src), "Pack"),  # fmt: skip
+            planner.PlannedOp(src, root / "One Shots/Kicks/Kick_01.wav", "trash", "duplicate",
+                              1.0, str(src), "Pack"),  # fmt: skip
+        ]
+    )
+    ops = _summarize(plan, root)["ops"]
+    assert isinstance(ops, list)
+    assert [op["dst"] for op in ops] == ["One Shots/Kicks/", "Trash"]
+    assert ops[0]["path"] == str(root / "One Shots/Kicks/Kick_01.wav")
