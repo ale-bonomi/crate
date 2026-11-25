@@ -466,79 +466,25 @@ def correct(
 @app.command()
 def dedupe(ctx: typer.Context, apply: Apply = False) -> None:
     """Find copies of library audio. Near-duplicates are reported and kept."""
-    from .dedupe import identify, scan_tree
-
     cfg = _cfg(ctx)
     conn = db.connect(_db_path())
     try:
-        roots = [cfg.root, cfg.splice_folder]
-        files = scan_tree(roots)
-        groups: dict[str, list[Path]] = {}
-        prints: dict[str, list[tuple[Path, str | None]]] = {}
-        for path in files:
-            content, _raw, finger = identify(conn, path)
-            key = content or _raw
-            if key:
-                groups.setdefault(key, []).append(path)
-            if finger:
-                prints.setdefault(finger, []).append((path, content))
-        actions = 0
-        for paths in groups.values():
-            if len(paths) < 2:
-                continue
-            kept = _canonical(paths, cfg.root)
-            extras = [path for path in paths if path != kept]
-            for extra in extras:
-                actions += 1
-                console.print(f"duplicate: {extra}  →  keep {kept} ({cfg.duplicates})")
-                if apply:
-                    _resolve_duplicate(conn, cfg, extra, kept)
-        for entries in prints.values():
-            hashes = {content for _, content in entries if content}
-            if len(hashes) < 2:
-                continue
-            shown = ", ".join(str(path) for path, _content in entries)
-            console.print(f"[yellow]near-duplicate (kept):[/] {shown}")
-        if actions == 0:
-            console.print("No exact duplicates.")
+        plan = planner.duplicate_plan(conn, cfg, [cfg.root, cfg.splice_folder])
+        for op in plan.ops:
+            console.print(f"duplicate: {op.src}  →  keep {op.kept} ({op.mode})")
+        for note in plan.notes:
+            console.print(f"[yellow]{note}[/]")
+        if not plan.ops:
+            console.print("Nothing to resolve.")
         elif not apply:
             console.print(
                 "[bold]Dry run.[/] Re-run with [cyan]--apply[/] to resolve exact duplicates."
             )
+        else:
+            batch = mover.execute(conn, plan, "dedupe", cfg.root)
+            console.print(f"[green]Done.[/] Batch {batch}. Undo with: crate undo {batch}")
     finally:
         conn.close()
-
-
-def _canonical(paths: list[Path], root: Path) -> Path:
-    root = root.expanduser().resolve()
-    inside = [path for path in paths if path.resolve().is_relative_to(root)]
-    return inside[0] if inside else paths[0]
-
-
-def _resolve_duplicate(conn: sqlite3.Connection, cfg: Config, extra: Path, kept: Path) -> None:
-    if cfg.duplicates == "keep":
-        return
-    if cfg.duplicates == "symlink":
-        extra.unlink()
-        extra.parent.mkdir(parents=True, exist_ok=True)
-        extra.symlink_to(kept)
-        return
-    if cfg.duplicates == "quarantine":
-        dest = cfg.root / "_Duplicates" / extra.name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            dest = dest.with_name(f"{dest.stem} (2){dest.suffix}")
-        if mover._same_volume(extra, dest):
-            extra.rename(dest)
-        else:
-            mover.copy_verified(extra, dest)
-            extra.unlink()
-        return
-    from send2trash import send2trash
-
-    send2trash(str(extra))
-    conn.execute("DELETE FROM files WHERE current_path=?", (str(extra),))
-    conn.commit()
 
 
 @app.command(name="where")

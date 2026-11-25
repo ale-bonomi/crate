@@ -22,7 +22,6 @@ from ..analyze.engine import annotate, save_correction
 from ..analyze.fusion import apply_correction, parse_label
 from ..analyze.types import Verdict
 from ..config import CRATE_HOME, Config, load_config, save_config
-from ..dedupe import identify, scan_tree
 from ..evaluate import read_labels, score
 from ..projects import index_projects, usage
 from ..scan import Item, scan
@@ -1034,12 +1033,6 @@ class Desk:
             try:
                 if plan.ops:
                     batch = mover.execute(conn, plan, kind, cfg.root)
-                    for op in plan.ops:
-                        if op.mode == "trash":
-                            conn.execute(
-                                "DELETE FROM files WHERE current_path=?", (str(op.src),)
-                            )
-                    conn.commit()
                     message = f"Batch {batch} filed. Undo puts moves back. Trash stays in Trash."
                 else:
                     message = "Nothing to file."
@@ -1117,37 +1110,12 @@ class Desk:
     def _duplicate_ops(self, plan: planner.Plan, cfg: Config, scope: Path) -> None:
         conn = self.connect()
         try:
-            groups: dict[str, list[Path]] = {}
-            prints: dict[str, list[tuple[Path, str | None]]] = {}
             root = scope if scope.exists() else cfg.root
-            for path in scan_tree([root]):
-                content, raw, finger = identify(conn, path)
-                key = content or raw
-                if key:
-                    groups.setdefault(key, []).append(path)
-                if finger:
-                    prints.setdefault(finger, []).append((path, content))
+            found = planner.duplicate_plan(conn, cfg, [root], mode="trash")
         finally:
             conn.close()
-        for paths in groups.values():
-            if len(paths) < 2:
-                continue
-            kept = _canonical(paths, cfg.root)
-            for extra in paths:
-                if extra == kept:
-                    continue
-                fake = extra.with_name(extra.name + ".crate-trash")
-                plan.ops.append(
-                    planner.PlannedOp(
-                        extra, fake, "trash", "duplicate", 1.0, extra.name, None, kept=kept
-                    )
-                )
-        for entries in prints.values():
-            hashes = {content for _, content in entries if content}
-            if len(hashes) < 2:
-                continue
-            shown = ", ".join(path.name for path, _content in entries)
-            plan.notes.append(f"Near-duplicate, left in place: {shown}")
+        plan.ops += found.ops
+        plan.notes += found.notes
 
     def _asd_ops(self, plan: planner.Plan, scope: Path) -> None:
         if not scope.exists():
@@ -1425,20 +1393,6 @@ def _relative_parent(item: Item, source: Path) -> Path:
         return item.path.resolve().relative_to(source.resolve()).parent
     except ValueError:
         return Path(*item.folders)
-
-
-def _canonical(paths: list[Path], root: Path) -> Path:
-    root = root.expanduser().resolve()
-    inside = [path for path in paths if _is_relative(path, root)]
-    return inside[0] if inside else paths[0]
-
-
-def _is_relative(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _titled_name(filename: str, genre: str, mood: str, style: str, label: str) -> str:
