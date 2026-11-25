@@ -217,11 +217,22 @@ function paintPlan(next) {
   const list = document.getElementById("plan");
   const ops = (next.summary && next.summary.ops) || [];
   list.replaceChildren();
-  if (next.phase !== "ready" && next.phase !== "running") return;
+  const planning = next.phase === "ready" || next.phase === "running";
+  // The list of every From/To pairing is a guide for choosing folders, not for a plan.
+  document.getElementById("flows").hidden = planning;
+  if (!planning) return;
   for (const op of ops.slice(0, 8)) {
     const item = el("li");
-    item.append(el("b", "", op.mode), el("span", "", `${op.src} → ${op.dst}`));
+    const line = el("span", "", `${op.src} → ${op.dst}`);
+    if (op.path) line.title = op.path;
+    item.append(el("b", "", op.mode), line);
     list.append(item);
+  }
+  const total = (next.summary && next.summary.count) || ops.length;
+  if (total > 8) {
+    const more = el("li", "more");
+    more.append(el("span", "", `and ${total - 8} more`));
+    list.append(more);
   }
 }
 

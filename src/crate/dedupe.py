@@ -90,7 +90,7 @@ def scan_tree(roots: list[Path]) -> list[Path]:
         if root.is_file() and root.suffix.lower() in AUDIO_EXT:
             found.append(root)
         elif root.is_dir():
-            for path in sorted(root.rglob("*")):
+            for path in sorted(root.rglob("*"), key=lambda p: (str(p.parent), p.stem, p.name)):
                 if (
                     path.is_file()
                     and path.suffix.lower() in AUDIO_EXT

@@ -209,6 +209,8 @@ button { cursor: pointer; }
 .flows li.active { background: var(--panel-2); color: var(--text); }
 .flows li.active.blocked { color: var(--danger); }
 .flows b { font-weight: 600; }
+.flows[hidden] { display: none; }
+.plan li.more span { color: var(--muted, inherit); }
 .plan {
   list-style: none;
   margin: 8px 0 0;
