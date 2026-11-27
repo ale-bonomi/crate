@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS analysis (
     swing REAL,
     features_json TEXT,
     clap_json TEXT,
+    embedding BLOB,
     analyzed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS corrections (
@@ -117,6 +118,9 @@ _FILE_COLUMNS = {
 }
 
 
+_ANALYSIS_COLUMNS = {"embedding": "BLOB"}
+
+
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -131,6 +135,10 @@ def connect(path: Path) -> sqlite3.Connection:
     for name, decl in _FILE_COLUMNS.items():
         if name not in have:
             conn.execute(f"ALTER TABLE files ADD COLUMN {name} {decl}")
+    have = _columns(conn, "analysis")
+    for name, decl in _ANALYSIS_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE analysis ADD COLUMN {name} {decl}")
     conn.executescript(INDEXES)
     conn.commit()
     return conn

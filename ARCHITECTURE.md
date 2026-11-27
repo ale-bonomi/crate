@@ -27,6 +27,7 @@ flowchart LR
 - `analyze/clap.py` — Optional CLAP zero-shot scores (`uv sync --extra ml`). Prompts live in the config. Apple Silicon uses MPS when PyTorch provides it.
 - `analyze/fusion.py` — Metadata and audio agree: high confidence. They disagree: audio wins unless the filename is explicit. A manual correction always wins. Below `review_threshold` (default 0.6) the file goes to `_Review/`.
 - `analyze/engine.py` — Parallel analysis. Features are cached in `analysis` by content hash, so a later rule change does not re-read the audio.
+- `learn.py` — `crate train`. Labels come from clear names and manual corrections. It caches a CLAP audio embedding per file in `analysis.embedding`, fits a logistic regression, and checks each type on held-out packs. Only types that pass are filed by the model; other guesses go to `_Review/`. The model is saved as plain arrays (`~/.crate/model.npz`) and used only for files whose names give no type.
 - `taxonomy.py` — Maps a label onto the configured folder, at most `max_depth` levels. MIDI and presets use `non_audio` destinations, which may sit outside the library root.
 - `naming.py` — Opt-in filename template. Unknown tokens are omitted.
 - `discover.py` — Reads Ableton's `Library.cfg` and the usual preset folders for Serum, Vital, Omnisphere, Pigments, Massive, Massive X, Phase Plant, Spire, Sylenth1, Dune 3, and u-he. `crate init` lets you replace any path.

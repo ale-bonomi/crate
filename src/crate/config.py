@@ -169,6 +169,8 @@ class Config(BaseModel):
     ableton_user_library: Path | None = None
     clap_prompts: dict[str, list[str]] = Field(default_factory=_default_prompts)
     clap_enabled: bool = True
+    # Use the model from `crate train` (~/.crate/model.npz) for files whose names say nothing.
+    use_trained_model: bool = True
     project_folders: list[Path] = Field(default_factory=list)
 
     @property

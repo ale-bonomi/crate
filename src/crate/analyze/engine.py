@@ -8,6 +8,9 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from ..hashing import file_hash
 from ..scan import Item
@@ -17,6 +20,10 @@ from .clap import ClapTagger
 from .features import extract
 from .fusion import fuse
 from .types import Correction, Features, Verdict
+
+if TYPE_CHECKING:
+    from .. import learn
+    from ..learn import Model
 
 _FEATURE_KEYS = (
     "duration",
@@ -168,8 +175,14 @@ def annotate(
     jobs: int | None = None,
     refresh: bool = False,
     use_clap: bool = True,
+    model: Model | None = None,
 ) -> tuple[dict[int, Verdict], list[str]]:
-    """Return verdicts keyed by `id(item)`, plus warnings. Writes the feature cache."""
+    """Return verdicts keyed by `id(item)`, plus warnings. Writes the feature cache.
+
+    `model` (from `crate train`) names files whose names say nothing, using CLAP
+    embeddings cached in the analysis table."""
+    from .. import learn
+
     warnings: list[str] = []
     audio_items = [it for it in items if it.kind == "audio"]
     tagger = ClapTagger(prompts) if use_clap else None
@@ -179,6 +192,15 @@ def annotate(
             "Install it with: uv sync --extra ml"
         )
         tagger = None
+    embedder: ClapTagger | None = None
+    if model is not None:
+        embedder = tagger or ClapTagger({})
+        if not embedder.can_embed():
+            warnings.append(
+                "A trained model exists, but CLAP is not installed to use it. "
+                "Install it with: uv sync --extra ml"
+            )
+            embedder = None
 
     reads: dict[int, tuple[AudioData | None, str]] = {}
     with ThreadPoolExecutor(max_workers=workers(jobs)) as pool:
@@ -233,7 +255,12 @@ def annotate(
             )
         identity = job.audio.content_hash if job.audio else job.raw_hash
         correction = load_correction(conn, identity)
-        verdict = fuse(meta, job.features, clap_scores, correction)
+        learned = None
+        if model is not None and embedder is not None and job.audio is not None and not meta.type:
+            vector = learn.embedding_for(conn, job.audio, _embed_with(embedder))
+            if vector is not None:
+                learned = model.predict(vector, job.audio.duration)
+        verdict = fuse(meta, job.features, clap_scores, correction, learned)
         verdict.content_hash = job.audio.content_hash if job.audio else None
         verdict.fingerprint = job.audio.fingerprint if job.audio else None
         verdict.raw_hash = job.raw_hash
@@ -242,4 +269,15 @@ def annotate(
             verdict.reason = (verdict.reason + " " if verdict.reason else "") + "undecoded"
         verdicts[id(it)] = verdict
     conn.commit()
+    if tagger is not None and tagger.error:
+        warnings.append(tagger.error + ". Classification used filenames and DSP only.")
+    elif embedder is not None and embedder.error:
+        warnings.append(embedder.error + ". The trained model was not used.")
     return verdicts, warnings
+
+
+def _embed_with(tagger: ClapTagger) -> learn.Embedder:
+    def embed(audio: AudioData) -> np.ndarray | None:
+        return tagger.embed(audio.samples, audio.sample_rate)
+
+    return embed

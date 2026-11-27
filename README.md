@@ -2,7 +2,7 @@
 
 Crate files a sample library into a shallow folder tree Ableton Live can browse, and keeps an index so you can find a sound without Splice's search. Filenames stay put, so Live's File Manager can still recover old sets. Every change is a dry run until you pass `--apply`, and `crate undo` reverses a batch.
 
-Classification uses three votes. The filename and parent folders supply type, loop, BPM, and key. DSP measures duration, onsets, crest, attack, decay, spectrum, tempo, key, and swing. If you install the optional model, CLAP scores the audio against prompts in the config. Agreement is high confidence. Disagreement trusts the audio unless the filename is explicit. Below the review threshold (default 0.6) the file goes to `_Review/`. A label you set with `crate correct` wins forever. Features are cached by a hash of the decoded audio, so changing a folder rule does not re-analyze the library.
+Classification starts from the filename and parent folders, which supply type, loop, BPM, and key. DSP measures duration, onsets, crest, attack, decay, spectrum, tempo, key, and swing. A clear name wins. The audio decides only types it can actually hear, and fills in when the name says nothing. For those unnamed files, a model trained on your own library with `crate train` does much better than the built-in guess (see [Teach Crate your sounds](#teach-crate-your-sounds)). Below the review threshold (default 0.6) the file goes to `_Review/`. A label you set with `crate correct` wins forever. Features are cached by a hash of the decoded audio, so changing a folder rule does not re-analyze the library.
 
 ## Setup
 
@@ -27,7 +27,7 @@ uv sync --python 3.12
 Optional extras:
 
 ```bash
-uv sync --extra ml    # CLAP zero-shot tags (downloads a model on first use)
+uv sync --extra ml    # crate train, and CLAP (downloads a model on first use)
 uv sync --extra mac   # menu-bar status for crate watch
 ```
 
@@ -67,6 +67,7 @@ uv run crate review                                # low-confidence files
 uv run crate correct "/path/to/file.wav" snare:tight --apply
 uv run crate projects "/path/to/Sets" --apply      # which samples Live sets use
 uv run crate watch                                 # plan new Splice files; --apply files them
+uv run crate train                                 # learn your sounds; needs --extra ml
 uv run crate eval labels.csv                       # precision/recall from a private CSV
 uv run crate status                                # "12 filed, 3 need review", plus batches
 uv run crate undo                                  # reverse the latest batch
@@ -112,6 +113,60 @@ uv run crate --config ./my-config.yaml sort "/path/to/Some Pack"
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map.
+
+## Teach Crate your sounds
+
+Most samples are named well enough to file by name alone. `crate train` is for the rest, such as `Sample 12.wav` or `DEMOKIT_8.wav`. It listens to the files in your library whose names *do* say what they are, learns what each kind of sound sounds like, and uses that for files whose names say nothing.
+
+It runs entirely on your Mac. Nothing is uploaded, and it never moves, renames, or changes a file.
+
+**1. Install the extra pieces** (about 2 GB: PyTorch, transformers, and scikit-learn):
+
+```bash
+uv sync --python 3.12 --extra ml
+```
+
+**2. Train on your library.** With no folders given, it reads your library root and Splice folder from `crate init`:
+
+```bash
+uv run crate train
+```
+
+Or name the folders to learn from. You can drag them into the terminal, and external drives work:
+
+```bash
+uv run crate train ~/Splice/Samples "/Volumes/Samples/Packs" "~/Music/Samples Library"
+```
+
+The first run downloads the CLAP audio model (about 600 MB) from Hugging Face, once. It then listens to every file whose name or folder clearly says what it is, such as `Kick_01.wav` or anything in a `Snares/` folder, plus every file you have labeled with `crate correct` or `crate review`. Files with vague names are skipped for training. On a laptop CPU it hears about four files a second, so 10,000 files take roughly 45 minutes the first time. Each file is heard once and cached in `~/.crate/library.db`, so later runs only listen to new files. If you stop it partway, the next run picks up where it left off.
+
+**3. Read the table it prints.** Each sound type gets a row. For example (illustrative numbers):
+
+| Sound | Examples | Packs | Right on unseen packs | Found | Crate files it |
+|---|---|---|---|---|---|
+| kick | 412 | 37 | 96% | 81% | yes |
+| vocal | 18 | 1 | - | - | no, review |
+
+- **Right on unseen packs**: Crate trains on some packs and tests on packs it held back. This is how often its confident guesses were right on sounds it had never seen.
+- **Crate files it**: "yes" only when a type has at least 20 examples (`--min-examples`) from two or more packs, and at least 85% of its confident guesses were right. For any other type, the guess goes to `_Review/` with the guess shown, so it is never filed in the wrong folder silently.
+
+The model is saved to `~/.crate/model.npz`, and `sort`, `ingest`, `reorganize`, `analyze`, and the Callima window use it from then on.
+
+**What changes, and what doesn't**
+
+- It only answers for files whose names give no type. A clear filename or folder always wins.
+- A label you set with `crate correct` always wins, and it also becomes a training example.
+- For a type that isn't trusted yet, the guess is still used when Crate's own audio check independently agrees. When they disagree, the file goes to `_Review/`.
+- Guesses below 70% probability (`--gate`) go to `_Review/` even for trusted types.
+- With few packs, expect a big `_Review/` pile and very few misfiled files. Trained on just two packs and tested on a third producer's pack with its names hidden, it misfiled 4% of files where Crate alone misfiled 58%, but it sent 90% to review. More packs mean more trusted types.
+
+**Make it better**
+
+- Label what lands in `_Review/` (`uv run crate review`, or `crate correct <file> <label>`), then run `crate train` again.
+- Train on packs from many producers. A type seen in only one pack can't be checked on unseen packs, so Crate won't file by it.
+- Re-run `crate train` after adding packs. Only new files are listened to.
+
+**Turn it off** by setting `use_trained_model: false` in `~/.crate/config.yaml`, or by deleting `~/.crate/model.npz`.
 
 ## Development
 
