@@ -187,3 +187,41 @@ def test_plan_summary_shows_short_destinations(tmp_path: Path):
     assert isinstance(ops, list)
     assert [op["dst"] for op in ops] == ["One Shots/Kicks/", "Trash"]
     assert ops[0]["path"] == str(root / "One Shots/Kicks/Kick_01.wav")
+
+
+def test_slice_toggle_files_drum_hits_through_apply(tmp_path: Path, monkeypatch) -> None:
+    from crate import slicer
+    from tests.synth import write_wav
+    from tests.test_slicer import SR, by_spectrum, loop, passthrough
+
+    pack = tmp_path / "pack"
+    write_wav(pack / "Record Chop.wav", loop(), SR)
+    shelf = tmp_path / "shelf"
+    shelf.mkdir()
+    home = tmp_path / "home"
+    desk = Desk(home=home, config_path=home / "config.yaml")
+    save_config(
+        Config(library_roots=[tmp_path / "library"], splice_folder=tmp_path / "splice",
+               clap_enabled=False),  # fmt: skip
+        desk.config_path,
+    )
+    monkeypatch.setattr(slicer, "installed", lambda: True)
+    monkeypatch.setattr(slicer, "demucs_separator", lambda: passthrough)
+    monkeypatch.setattr(slicer, "dsp_label", by_spectrum)
+    desk.action("set-from", {"path": str(pack)})
+    desk.action("set-to", {"path": str(shelf)})
+    desk.action("set-mode", {"mode": "type"})
+    assert desk.snapshot()["slice"] == {"on": False, "installed": True}
+    desk.action("set-slice", {"on": True})
+    assert desk.snapshot()["slice"]["on"] is True
+
+    desk._plan_job("organize")  # what Go runs, without the thread
+    assert desk.phase == "ready", desk.message
+    sliced = [op for op in desk._plan.ops if op.mode == "extract"]
+    assert sliced and all(op.src.exists() for op in sliced)  # staging outlives the plan
+
+    desk._apply_job()  # what Apply runs
+    assert desk.phase == "idle", desk.message
+    assert (shelf / "One Shots" / "Kicks" / "Record Chop kick 01.wav").exists()
+    assert (shelf / "Loops" / "Drum Fills").is_dir()
+    assert desk._plan_staging == []  # cleaned up after filing

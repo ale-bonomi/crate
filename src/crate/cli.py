@@ -42,6 +42,14 @@ console = Console()
 
 Apply = Annotated[bool, typer.Option("--apply", help="Execute the plan (default is dry run).")]
 Paths = Annotated[list[Path], typer.Argument(help="Files or folders (drag them in).")]
+Slice = Annotated[
+    bool | None,
+    typer.Option(
+        "--slice/--no-slice",
+        help="Also cut the drum hits out of loops and chops into one-shots. "
+        "Default: `slice.enabled` in the config.",
+    ),
+]
 
 
 @dataclass
@@ -128,6 +136,7 @@ def _scan_plan(
     refresh: bool = False,
     copy_roots: list[Path] | None = None,
     skip_dirs: set[str] | None = None,
+    slice_hits: bool = False,
 ) -> tuple[Config, ScanResult, planner.Plan, Path, sqlite3.Connection]:
     cfg = _cfg(ctx)
     CRATE_HOME.mkdir(parents=True, exist_ok=True)
@@ -145,6 +154,7 @@ def _scan_plan(
     conn = db.connect(_db_path())
     verdicts: dict[int, Verdict] = {}
     if router_kind == "sort":
+        model = learn.load_model(cfg.use_trained_model)
         with console.status("Analyzing..."):
             verdicts, warnings = annotate(
                 result.items,
@@ -153,9 +163,11 @@ def _scan_plan(
                 jobs=ctx.obj.jobs,
                 refresh=refresh,
                 use_clap=cfg.clap_enabled,
-                model=learn.load_model(cfg.use_trained_model),
+                model=model,
             )
         result.warnings.extend(warnings)
+        if slice_hits:
+            result.warnings.extend(_slice(result, verdicts, conn, staging, cfg, model))
         router = planner.sort_router(cfg, verdicts)
     else:
         router = planner.flatten_router
@@ -178,11 +190,14 @@ def _run(
     kind: str,
     copy_roots: list[Path] | None = None,
     skip_dirs: set[str] | None = None,
+    slice_hits: bool | None = None,
 ) -> None:
     from .render import show_plan
 
+    if slice_hits is None:
+        slice_hits = _cfg(ctx).slice.enabled
     cfg, result, plan, staging, conn = _scan_plan(
-        ctx, paths, kind, copy_roots=copy_roots, skip_dirs=skip_dirs
+        ctx, paths, kind, copy_roots=copy_roots, skip_dirs=skip_dirs, slice_hits=slice_hits
     )
     try:
         show_plan(console, plan, result, apply, root=cfg.root)
@@ -195,6 +210,44 @@ def _run(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _slice(
+    result: ScanResult,
+    verdicts: dict[int, Verdict],
+    conn: sqlite3.Connection,
+    staging: Path,
+    cfg: Config,
+    model: learn.Model | None,
+) -> list[str]:
+    """Cut drum hits out of the scanned loops and chops into staged one-shots."""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TimeRemainingColumn
+
+    from . import slicer
+
+    long_enough = [
+        it
+        for it in result.items
+        if (v := verdicts.get(id(it))) is not None
+        and v.features is not None
+        and v.features.duration >= cfg.slice.min_source_seconds
+    ]
+    if not long_enough:
+        return []
+    if not slicer.installed():
+        return ["Slicing needs Demucs. Install it with: uv sync --extra ml --extra slice"]
+    columns = (BarColumn(), MofNCompleteColumn(), TimeRemainingColumn())
+    with Progress("Slicing", *columns, console=console) as progress:
+        task = progress.add_task("slice", total=len(long_enough))
+        return slicer.add_slices(
+            result.items,
+            verdicts,
+            conn,
+            staging,
+            cfg.slice,
+            model=model,
+            progress=lambda: progress.advance(task),
+        )
+
+
 @app.command()
 def unpack(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
     """Flatten nested pack folders and extract zips (no analysis)."""
@@ -202,15 +255,15 @@ def unpack(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
 
 
 @app.command()
-def sort(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
+def sort(ctx: typer.Context, paths: Paths, apply: Apply = False, slice_: Slice = None) -> None:
     """Plan/apply moves into the library structure."""
-    _run(ctx, paths, apply, "sort", "sort")
+    _run(ctx, paths, apply, "sort", "sort", slice_hits=slice_)
 
 
 @app.command()
-def ingest(ctx: typer.Context, paths: Paths, apply: Apply = False) -> None:
+def ingest(ctx: typer.Context, paths: Paths, apply: Apply = False, slice_: Slice = None) -> None:
     """Unpack, classify and sort in one shot (the main daily command)."""
-    _run(ctx, paths, apply, "ingest", "sort")
+    _run(ctx, paths, apply, "ingest", "sort", slice_hits=slice_)
 
 
 @app.command()

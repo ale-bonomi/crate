@@ -58,6 +58,7 @@ VALID_TYPES = {
     "fx",
     "drum",
     "top",
+    "fill",
 }
 _LOOP_ALIASES = {
     "drums": "drum",
@@ -73,6 +74,8 @@ _LOOP_ALIASES = {
     "vocals": "vocal",
     "fx": "fx",
     "textures": "fx",
+    "fill": "fill",
+    "fills": "fill",
 }
 
 

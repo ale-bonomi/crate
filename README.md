@@ -29,6 +29,7 @@ Optional extras:
 ```bash
 uv sync --extra ml    # crate train, and CLAP (downloads a model on first use)
 uv sync --extra mac   # menu-bar status for crate watch
+uv sync --extra ml --extra slice   # ingest --slice: cut drum hits out of loops and chops
 ```
 
 ## Usage
@@ -55,6 +56,7 @@ Other commands:
 
 ```bash
 uv run crate ingest "/path/to/Some Pack" --apply   # unpack zips, classify, and sort
+uv run crate ingest --slice "/path/to/Chops"       # also cut every drum hit into a one-shot
 uv run crate reorganize --apply                    # re-file the library after a rule change
 uv run crate reorganize --section "One Shots/Kicks"
 uv run crate analyze "/path/to/Some Pack"          # cache features, move nothing
@@ -113,6 +115,37 @@ uv run crate --config ./my-config.yaml sort "/path/to/Some Pack"
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map.
+
+## Slice drum hits out of loops and chops
+
+Cut a section you like out of a record or a YouTube rip, export it, and let Crate cut every drum hit out of it. Kicks land in `One Shots/Kicks`, snares in `One Shots/Snares`, and so on. Quick runs of hits, such as a fill, go whole to `Loops/Drum Fills`. It saves exporting and naming slices one at a time.
+
+Slicing is off unless you ask for it:
+
+```bash
+uv sync --python 3.12 --extra ml --extra slice     # once: Demucs, about 80 MB of model weights on first use
+uv run crate ingest --slice "/path/to/Chops"       # see the plan
+uv run crate ingest --slice "/path/to/Chops" --apply
+```
+
+In the Callima window, turn on **Slice drum hits out of loops and chops** on the Organize screen before Go. To slice on every `ingest`, `sort`, and `watch`, set `slice.enabled: true` in `~/.crate/config.yaml`.
+
+How it works:
+
+1. **Separate.** [Demucs](https://github.com/facebookresearch/demucs) pulls the drums out of the mix, so a kick isn't buried under bass and vocals. A file with hardly any drums, such as strings or a vocal, is left alone.
+2. **Find and label each hit** as a kick, snare, hat, or perc. The model from `crate train` does this well. Without it, Crate uses a rough guess and sends most slices to `_Review/`, so train first.
+3. **Cut.** Each hit stops where the next one starts, so a kick doesn't carry the hat after it. A snare keeps at least 0.3 s so its tail isn't chopped off. Every cut fades in and out instead of clicking.
+4. **Keep the best.** For each file Crate keeps the 2 cleanest hits of each kind: the drum alone, confident, with little of the song underneath. Set `slice.keep_per_kind: 0` to keep every hit.
+
+What to expect:
+
+- Slices are new files named after their source, like `Catch The Sun kick 01.wav`. The source file is filed as usual and left as it is.
+- Slices are in the plan and the journal like any other file, so `crate undo` removes them.
+- Two drums on the same beat (a snare with a hat over it) stay together in one slice. Separating those would need a finer drum-splitting model.
+- Claps cut from records almost always turned out to be snares in listening tests, so Crate files them as snares. Rims and toms go to percussion until the model learns them.
+- On a laptop CPU it takes about a minute per chop. Apple Silicon is faster. Only the first 5 minutes of a file are sliced (`slice.max_source_seconds`).
+
+Settings, under `slice:` in the config: `enabled`, `keep_per_kind` (2), `fills` (true), `min_drum_share` (0.15), `min_source_seconds` (1), `max_source_seconds` (300).
 
 ## Teach Crate your sounds
 
