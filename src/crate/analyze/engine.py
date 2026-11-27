@@ -242,4 +242,6 @@ def annotate(
             verdict.reason = (verdict.reason + " " if verdict.reason else "") + "undecoded"
         verdicts[id(it)] = verdict
     conn.commit()
+    if tagger is not None and tagger.error:
+        warnings.append(tagger.error + ". Classification used filenames and DSP only.")
     return verdicts, warnings

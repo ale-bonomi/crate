@@ -32,6 +32,7 @@ class ClapTagger:
         self._device = "cpu"
         self._labels: list[str] = []
         self._texts: list[str] = []
+        self.error: str | None = None  # first failure, reported once instead of hidden
 
     def available(self) -> bool:
         return installed() and not self._failed and bool(self.prompts)
@@ -42,8 +43,10 @@ class ClapTagger:
         if self._failed or not installed():
             return False
         try:
-            import torch  # type: ignore[import-not-found]
-            from transformers import ClapModel, ClapProcessor  # type: ignore[import-not-found]
+            # Untyped on purpose: both are optional and not installed in CI.
+            torch: Any = importlib.import_module("torch")
+            transformers: Any = importlib.import_module("transformers")
+            ClapModel, ClapProcessor = transformers.ClapModel, transformers.ClapProcessor
 
             device = "cpu"
             if torch.backends.mps.is_available():
@@ -52,8 +55,9 @@ class ClapTagger:
             model = ClapModel.from_pretrained(MODEL_ID)
             model.to(device)
             model.eval()
-        except Exception:
+        except Exception as exc:
             self._failed = True
+            self.error = f"CLAP model did not load: {type(exc).__name__}: {exc}"
             return False
         labels: list[str] = []
         texts: list[str] = []
@@ -73,7 +77,7 @@ class ClapTagger:
         """Map each prompt label to its best similarity against this clip."""
         if not self._load():
             return None
-        import torch
+        torch: Any = importlib.import_module("torch")
 
         target = 48000
         if sr != target and len(samples):
@@ -88,18 +92,14 @@ class ClapTagger:
             processor = self._processor
             model = self._model
             assert processor is not None and model is not None
-            inputs = processor(
-                text=self._texts,
-                audios=audio,
-                sampling_rate=target,
-                return_tensors="pt",
-                padding=True,
-            )
+            inputs = _encode(processor, self._texts, audio, target)
             inputs = {k: v.to(self._device) for k, v in inputs.items()}
             with torch.no_grad():
                 out = model(**inputs)
                 probs = torch.softmax(out.logits_per_audio, dim=-1)[0].detach().cpu().numpy()
-        except Exception:
+        except Exception as exc:
+            if self.error is None:
+                self.error = f"CLAP scoring failed: {type(exc).__name__}: {exc}"
             return None
         best: dict[str, float] = {}
         for label, score in zip(self._labels, probs, strict=True):
@@ -107,6 +107,15 @@ class ClapTagger:
             if value > best.get(label, 0.0):
                 best[label] = value
         return best or None
+
+
+def _encode(processor: Any, texts: list[str], audio: np.ndarray, sr: int) -> Any:
+    """transformers 5 takes `audio=`; releases before it took `audios=`."""
+    common = {"text": texts, "sampling_rate": sr, "return_tensors": "pt", "padding": True}
+    try:
+        return processor(audio=audio, **common)
+    except (TypeError, ValueError):
+        return processor(audios=audio, **common)
 
 
 def best_label(scores: dict[str, float] | None) -> tuple[str, float] | None:
