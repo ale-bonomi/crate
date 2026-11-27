@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from .. import db, mover, planner
+from .. import db, learn, mover, planner
 from ..analyze.engine import annotate, save_correction
 from ..analyze.fusion import apply_correction, parse_label
 from ..analyze.types import Verdict
@@ -355,6 +355,9 @@ class Desk:
         if self.config_path.exists():
             return cfg
         return cfg
+
+    def _model(self, cfg: Config) -> learn.Model | None:
+        return learn.load_model(cfg.use_trained_model, self.home / "model.npz")
 
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.home / "library.db")
@@ -1068,7 +1071,7 @@ class Desk:
             if mode == "type":
                 prompts = cfg.clap_prompts if cfg.clap_enabled else {}
                 verdicts, warnings = annotate(
-                    result.items, conn, prompts, use_clap=cfg.clap_enabled
+                    result.items, conn, prompts, use_clap=cfg.clap_enabled, model=self._model(cfg)
                 )
                 result.warnings.extend(warnings)
                 router: planner.Router = _rebase_router(
@@ -1270,7 +1273,7 @@ class Desk:
             result = scan([source], staging)
             prompts = cfg.clap_prompts if cfg.clap_enabled else {}
             verdicts, warnings = annotate(
-                result.items, conn, prompts, use_clap=cfg.clap_enabled
+                result.items, conn, prompts, use_clap=cfg.clap_enabled, model=self._model(cfg)
             )
         finally:
             conn.close()
@@ -1299,7 +1302,7 @@ class Desk:
             by_name = {item.path.resolve(): item for item in result.items}
             prompts = cfg.clap_prompts if cfg.clap_enabled else {}
             verdicts, _warnings = annotate(
-                result.items, conn, prompts, use_clap=cfg.clap_enabled
+                result.items, conn, prompts, use_clap=cfg.clap_enabled, model=self._model(cfg)
             )
         finally:
             conn.close()

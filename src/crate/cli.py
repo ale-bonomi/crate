@@ -14,7 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import db, mover, planner
+from . import db, learn, mover, planner
 from .analyze.engine import annotate, save_correction
 from .analyze.fusion import apply_correction, parse_label
 from .analyze.types import Correction, Verdict
@@ -153,6 +153,7 @@ def _scan_plan(
                 jobs=ctx.obj.jobs,
                 refresh=refresh,
                 use_clap=cfg.clap_enabled,
+                model=learn.load_model(cfg.use_trained_model),
             )
         result.warnings.extend(warnings)
         router = planner.sort_router(cfg, verdicts)
@@ -256,6 +257,7 @@ def analyze(
             jobs=ctx.obj.jobs,
             refresh=refresh,
             use_clap=cfg.clap_enabled,
+            model=learn.load_model(cfg.use_trained_model),
         )
         for warning in warnings:
             console.print(f"[yellow]warning:[/] {warning}")
@@ -288,6 +290,88 @@ def analyze(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+@app.command()
+def train(
+    ctx: typer.Context,
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Folders to learn from. Default: the library and the Splice folder."),
+    ] = None,
+    min_examples: Annotated[
+        int, typer.Option("--min-examples", help="Examples a sound type needs to be trusted.")
+    ] = 20,
+    gate: Annotated[
+        float, typer.Option("--gate", help="Below this probability a guess goes to _Review/.")
+    ] = 0.7,
+) -> None:
+    """Learn your sounds from well-named files and your corrections. Moves nothing."""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TimeRemainingColumn
+
+    from .analyze.clap import ClapTagger
+
+    cfg = _cfg(ctx)
+    if paths:
+        roots = _paths(paths)
+    else:
+        roots = [p for p in (cfg.root, cfg.splice_folder.expanduser()) if p.exists()]
+    missing = [p for p in roots if not p.exists()]
+    if missing or not roots:
+        console.print(f"Nothing to learn from: {', '.join(map(str, missing)) or 'no folders'}.")
+        raise typer.Exit(code=1)
+    tagger = ClapTagger({})
+    if not tagger.can_embed():
+        console.print("[red]Training needs the CLAP model.[/] Install it with: uv sync --extra ml")
+        raise typer.Exit(code=1)
+    CRATE_HOME.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix="staging-", dir=CRATE_HOME))
+    conn = db.connect(_db_path())
+    try:
+        with console.status("Scanning..."):
+            items = [item for item in scan(roots, staging).items if item.kind == "audio"]
+        columns = (BarColumn(), MofNCompleteColumn(), TimeRemainingColumn())
+        with Progress("Listening", *columns, console=console) as progress:
+            task = progress.add_task("listen", total=len(items))
+            collected = learn.collect(
+                items,
+                conn,
+                lambda audio: tagger.embed(audio.samples, audio.sample_rate),
+                progress=lambda: progress.advance(task),
+            )
+    finally:
+        conn.close()
+        shutil.rmtree(staging, ignore_errors=True)
+    if tagger.error:
+        console.print(f"[yellow]warning:[/] {tagger.error}")
+    for why, n in collected.skipped.most_common():
+        console.print(f"[dim]skipped {n}: {why}[/]")
+    try:
+        with console.status("Training..."):
+            model, reports = learn.fit(collected.examples, gate=gate, min_examples=min_examples)
+    except learn.TrainError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title=f"Learned from {len(collected.examples)} files")
+    table.add_column("Sound")
+    table.add_column("Examples", justify="right")
+    table.add_column("Packs", justify="right")
+    table.add_column("Right on unseen packs", justify="right")
+    table.add_column("Found", justify="right")
+    table.add_column("Crate files it")
+    for r in reports:
+        precision = "-" if r.precision is None else f"{r.precision:.0%}"
+        recall = "-" if r.recall is None else f"{r.recall:.0%}"
+        table.add_row(
+            r.label, str(r.examples), str(r.packs), precision, recall,
+            "[green]yes[/]" if r.trusted else "[yellow]no, review[/]",
+        )  # fmt: skip
+    console.print(table)
+    path = model.save()
+    trusted = ", ".join(sorted(model.trusted)) or "none yet"
+    console.print(f"Saved {path}. Files whose names say nothing will be filed as: {trusted}.")
+    console.print("Other guesses go to _Review/ with the guess shown. Re-run after adding packs.")
+
+
 @app.command(name="eval")
 def evaluate_cmd(
     ctx: typer.Context, labels: Annotated[Path, typer.Argument(help="CSV: path,type,loop")]
@@ -307,6 +391,7 @@ def evaluate_cmd(
             cfg.clap_prompts if cfg.clap_enabled else {},
             jobs=ctx.obj.jobs,
             use_clap=cfg.clap_enabled,
+            model=learn.load_model(cfg.use_trained_model),
         )
         gold: list[tuple[str, str]] = []
         predicted: list[str | None] = []

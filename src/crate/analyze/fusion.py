@@ -8,6 +8,8 @@ from .metadata import Meta
 from .types import Correction, Features, Verdict
 
 _EXPLICIT = 0.8
+# Types that share a library folder; `crate train` learns each pair as one type.
+SAME_FOLDER = {"cymbal": "hat", "tom": "perc", "rim": "perc", "808": "bass"}
 _CLAP_TYPES = {
     "kick": ("kick", None),
     "snare": ("snare", None),
@@ -148,8 +150,12 @@ def fuse(
     features: Features | None,
     clap: dict[str, float] | None,
     correction: Correction | None,
+    learned: tuple[str, float, bool] | None = None,
 ) -> Verdict:
-    if features is None and not clap:
+    """`learned` is the trained model's (type, probability, trusted), used only when the
+    name gives no type. An untrusted guess keeps its type but gets confidence 0, so the
+    file goes to review with the guess in its reason."""
+    if features is None and not clap and learned is None:
         verdict = _from_meta(meta)
         if correction:
             verdict = apply_correction(verdict, correction)
@@ -179,6 +185,26 @@ def fuse(
             elif audio_loop is None:
                 audio_loop = False
 
+    learned_note = ""
+    if learned is not None and not meta.type:
+        # Trained on this library and checked on held-out packs: a trusted guess decides.
+        # An untrusted one still counts when the spectrum or CLAP independently agrees;
+        # when they disagree, the file goes to review with the guess in its reason.
+        l_type, l_prob, l_trusted = learned
+        agrees = audio_type is not None and SAME_FOLDER.get(audio_type, audio_type) == l_type
+        if l_trusted:
+            audio_conf = min(0.95, l_prob)
+            learned_note = f"learned:{l_type} {l_prob:.2f}"
+        elif agrees:
+            audio_conf = max(audio_conf, min(0.9, l_prob))
+            learned_note = f"learned:{l_type} {l_prob:.2f} agrees with audio:{audio_type}"
+        else:
+            audio_conf = 0.0
+            learned_note = f"learned:{l_type} {l_prob:.2f} (not trusted)"
+        if not agrees:
+            audio_type = l_type
+        from_clap = True
+
     chosen: str | None
     conf: float
     reason: str
@@ -199,7 +225,8 @@ def fuse(
             chosen, conf = audio_type, round(min(audio_conf, 0.75), 2)
             reason = f"audio:{audio_type} over metadata:{meta.type}"
     elif audio_type:
-        chosen, conf, reason = audio_type, audio_conf, f"audio:{audio_type}"
+        chosen, conf = audio_type, audio_conf
+        reason = learned_note or f"audio:{audio_type}"
     else:
         chosen, conf, reason = meta.type, meta.confidence, meta.reason or "metadata"
 

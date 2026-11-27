@@ -16,14 +16,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = ["torch>=2.2", "transformers>=4.40"]
+ml = ["torch>=2.2", "transformers>=4.40", "scikit-learn>=1.4"]
 mac = ["pyobjc-framework-Cocoa>=10.3"]
 
 [project.scripts]
 crate = "crate.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "types-PyYAML", "types-Send2Trash"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "types-PyYAML",
+  "types-Send2Trash",
+  "scikit-learn>=1.4",  # tests train the classifier on synthetic embeddings
+]
 
 [build-system]
 requires = ["hatchling"]
