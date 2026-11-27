@@ -28,19 +28,35 @@ TYPE_KEYWORDS: dict[str, str] = {
             "clave",
             "woodblock",
             "triangle",
+            "click",
+            "clicks",
         ],
         "perc",
     ),
     **dict.fromkeys(["808", "808s", "sub"], "808"),
     **dict.fromkeys(["bass", "bassline", "reese", "bassy"], "bass"),
     **dict.fromkeys(
-        ["vox", "vocal", "vocals", "acapella", "acappella", "chant", "shout", "adlib", "adlibs"],
+        [
+            "vox",
+            "vocal",
+            "vocals",
+            "acapella",
+            "acappella",
+            "chant",
+            "chants",
+            "shout",
+            "adlib",
+            "adlibs",
+            "vp",  # vocal phrase
+        ],
         "vocal",
     ),
     **dict.fromkeys(
         [
             "pad",
             "pads",
+            "drone",
+            "drones",
             "chord",
             "chords",
             "keys",
@@ -70,6 +86,7 @@ TYPE_KEYWORDS: dict[str, str] = {
         [
             "fx",
             "sfx",
+            "bfx",  # background fx
             "riser",
             "risers",
             "impact",
@@ -210,7 +227,11 @@ def parse(stem: str, folders: tuple[str, ...]) -> Meta:
         meta.type = file_types[0]
         conf = 0.9
         reason = f"filename:{meta.type}"
-        if len(file_types) > 1:
+        if len(file_types) > 1 and folder_type in file_types:
+            # "BASS GLITCH" in BASSES/: the folder says which word names the sound
+            meta.type = folder_type
+            conf, reason = 0.85, f"filename {file_types}, folder:{folder_type}"
+        elif len(file_types) > 1:
             conf, reason = 0.65, f"filename ambiguous:{file_types}"
         elif folder_type and folder_type != meta.type:
             conf, reason = 0.75, f"filename:{meta.type} vs folder:{folder_type}"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .clap import best_label
-from .features import characteristics, loop_guess, type_guess
+from .features import AUDIO_TYPES, characteristics, loop_guess, type_guess
 from .metadata import Meta
 from .types import Correction, Features, Verdict
 
@@ -159,6 +159,7 @@ def fuse(
     audio_conf = 0.0
     audio_loop: bool | None = None
     clap_body: str | None = None
+    from_clap = False
     if features is not None:
         audio_type, audio_conf = type_guess(features)
         audio_loop = loop_guess(features)
@@ -171,6 +172,7 @@ def fuse(
         ahead = score >= 0.25 and score * n >= 1.5 and score >= audio_conf
         if mapped and ahead:
             audio_type, clap_body = mapped
+            from_clap = True
             audio_conf = min(0.9, 0.55 + score)
             if label in _LOOP_LABELS:
                 audio_loop = True
@@ -187,6 +189,11 @@ def fuse(
         elif meta.confidence >= _EXPLICIT:
             chosen, conf = meta.type, 0.85
             reason = f"metadata:{meta.type} over audio:{audio_type}"
+        elif meta.type not in AUDIO_TYPES and not from_clap:
+            # The spectrum can't recognise a vocal, an FX or a clap, so its guess is no
+            # evidence against the name. (CLAP can, so a CLAP guess still counts.)
+            chosen, conf = meta.type, meta.confidence
+            reason = f"metadata:{meta.type} (audio guessed {audio_type})"
         else:
             chosen, conf = audio_type, round(min(audio_conf, 0.75), 2)
             reason = f"audio:{audio_type} over metadata:{meta.type}"
