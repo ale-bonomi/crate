@@ -13,12 +13,24 @@ from crate.analyze.metadata import parse, parse_key
         ("sample_12", ("Cymatics Pack", "Hi Hats"), "hat", None),
         ("Vox_Chop_120_Fmin", ("Vocals",), "vocal", None),
         ("808_Glide_F#", ("808s",), "808", None),
+        ("MAYGE-CLICK 4", ("DRUMS", "DRUM ONE SHOTS", "CLICKS"), "perc", False),
+        ("MAYGE-VP NUCLEAR", ("VOCALS", "PHRASES"), "vocal", None),
+        ("MAYGE-HORROR BFX 2", ("FX", "BACKGROUND FX"), "fx", None),
+        ("MAYGE-SPACE DRONE 2 Dm", ("INSTRUMENTS", "PADS,DRONES"), "melodic", None),
     ],
 )
 def test_type_and_loop(stem, folders, type_, loop):
     m = parse(stem, folders)
     assert m.type == type_
     assert m.loop is loop
+
+
+def test_folder_settles_two_type_words():
+    # "glitch" is an FX word, but the folder says these are basses
+    m = parse("MAYGE-BASS GLITCH 12", ("BASSES", "BASS GLITCHES"))
+    assert m.type == "bass" and m.confidence >= 0.7
+    # with no folder to settle it, the file still goes to review
+    assert parse("BASS GLITCH 12", ("Pack",)).confidence < 0.6
 
 
 def test_unknown_goes_to_zero_confidence():

@@ -94,6 +94,18 @@ def test_correction_wins_and_is_cached(tmp_path: Path):
     assert count == 1
 
 
+def test_folder_type_the_audio_cannot_hear_is_kept():
+    # A vocal phrase sounds tonal, so the spectrum guesses "melodic". It has no vocal
+    # category, so that guess must not overrule the Vocals folder.
+    meta = parse("Phrase_03", ("Vocals",))
+    assert meta.confidence < 0.8  # folder-only evidence, not explicit
+    verdict = fuse(meta, extract(chord(22050, 2.0), 22050), None, None)
+    assert verdict.type == "vocal"
+    # A type the spectrum can hear still lets audio win over a weak name.
+    weak = parse("sample_3", ("Kicks",))
+    assert fuse(weak, extract(snare(decay=40), 22050), None, None).type == "snare"
+
+
 def test_clap_label_can_name_a_vague_file():
     meta = parse("loop_01", ())
     verdict = fuse(meta, None, {"snare": 0.8, "kick": 0.05}, None)

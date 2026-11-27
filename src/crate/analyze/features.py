@@ -226,6 +226,10 @@ def loop_guess(features: Features) -> bool | None:
     return None
 
 
+# The only types type_guess can return. For any other type, the audio has no opinion.
+AUDIO_TYPES = frozenset({"kick", "808", "hat", "snare", "melodic", "drum"})
+
+
 def type_guess(features: Features) -> tuple[str | None, float]:
     """A coarse type from the spectrum. CLAP and filenames can overrule this."""
     short = features.duration < 1.15 and features.onset_count <= 4
