@@ -15,7 +15,7 @@ _LOOP_CATEGORY = {
     "tom": "drums", "rim": "drums", "drum": "drums",
     "perc": "perc", "top": "perc",
     "bass": "bass", "808": "bass",
-    "melodic": "melodic", "vocal": "vocal", "fx": "fx",
+    "melodic": "melodic", "vocal": "vocal", "fx": "fx", "fill": "fill",
 }  # fmt: skip
 _ONESHOT_CATEGORY = {"drum": "perc", "top": "perc"}
 
@@ -30,7 +30,7 @@ class Route:
 def route_audio(meta: Meta, cfg: Config) -> Route:
     if meta.type is None:
         return Route(REVIEW_DIR, "unknown", 0.0)
-    if meta.loop:
+    if meta.loop or meta.type == "fill":  # a fill is a phrase, never a one-shot
         key = _LOOP_CATEGORY.get(meta.type)
         cat = cfg.taxonomy.loops.get(key) if key else None
         label = f"loop/{key}"

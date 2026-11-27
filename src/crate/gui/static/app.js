@@ -206,7 +206,12 @@ function paintModes(next) {
 }
 
 function paintToggles(next) {
-  for (const button of document.querySelectorAll(".toggle")) {
+  const slice = document.getElementById("slice-toggle");
+  const on = Boolean(next.slice && next.slice.on);
+  slice.setAttribute("aria-pressed", on ? "true" : "false");
+  slice.querySelector("em").textContent = on ? "On" : "Off";
+  slice.title = next.slice && next.slice.installed ? "" : "Needs Demucs: uv sync --extra ml --extra slice";
+  for (const button of document.querySelectorAll(".toggle:not(.slice-toggle)")) {
     const on = Boolean(next.cleanup[button.dataset.flag]);
     button.setAttribute("aria-pressed", on ? "true" : "false");
     button.querySelector("em").textContent = on ? "On" : "Off";
@@ -443,7 +448,12 @@ document.getElementById("search").addEventListener("input", (event) => {
   act("search", { q: event.target.value }).catch(showError);
 });
 
-document.querySelectorAll(".toggle").forEach((button) => {
+document.getElementById("slice-toggle").addEventListener("click", (event) => {
+  const on = event.currentTarget.getAttribute("aria-pressed") !== "true";
+  act("set-slice", { on }).catch(showError);
+});
+
+document.querySelectorAll(".toggle:not(.slice-toggle)").forEach((button) => {
   button.addEventListener("click", () => {
     const flag = button.dataset.flag;
     act("set-cleanup", { [flag]: button.getAttribute("aria-pressed") !== "true" }).catch(showError);

@@ -1,6 +1,8 @@
 # Slicing drum hits out of song chops
 
-Research notes, not a feature yet. The aim is to file chops (phrases cut from records) the way any sample is filed, and to cut usable one-shots (kick, snare, hat…) out of them. Nothing here is wired into `crate`. No audio is committed.
+Research notes behind `crate ingest --slice` (`src/crate/slicer.py`). The aim is to file chops (phrases cut from records) the way any sample is filed, and to cut usable one-shots (kick, snare, hat…) out of them. The scripts here are the prototypes the listening tests ran on. No audio is committed.
+
+What the built-in slicer took from round 2: each hit stops at the next one (a snare keeps at least 0.3 s), quick runs of hits are saved whole as fills, and clap labels from chops count as snares.
 
 ## Pipeline being tested
 

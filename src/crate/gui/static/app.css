@@ -285,6 +285,7 @@ button { cursor: pointer; }
   padding: 8px 12px;
 }
 .toggle[aria-pressed="true"] em { color: var(--green); }
+.slice-toggle { margin: 4px 0 8px; }
 
 .destination {
   color: var(--orange);

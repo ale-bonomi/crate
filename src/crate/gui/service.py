@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from .. import db, learn, mover, planner
+from .. import db, learn, mover, planner, slicer
 from ..analyze.engine import annotate, save_correction
 from ..analyze.fusion import apply_correction, parse_label
 from ..analyze.types import Verdict
@@ -349,6 +349,8 @@ class Desk:
         self._plan_kind = ""
         self.phase = "idle"  # idle | running | ready | error
         self._summary: dict[str, object] = {}
+        # Extracted archives and slices live here until the plan is applied or dropped.
+        self._plan_staging: list[Path] = []
 
     def config(self) -> Config:
         cfg = load_config(self.config_path if self.config_path.exists() else None)
@@ -404,6 +406,7 @@ class Desk:
             "set-mode": self._set_mode,
             "new-structure": self._new_structure,
             "set-cleanup": self._set_cleanup,
+            "set-slice": self._set_slice,
             "set-style": self._set_style,
             "search": self._search,
             "pin": self._pin,
@@ -502,6 +505,7 @@ class Desk:
             "title": self._pair("title"),
             "tagStyle": style,
             "cleanup": self._cleanup(),
+            "slice": {"on": self._slicing(cfg), "installed": slicer.installed()},
             "files": self._files(cfg),
             "search": self.search,
             "pack": None
@@ -907,6 +911,16 @@ class Desk:
             self._clear_plan()
             self._save()
 
+    def _slicing(self, cfg: Config) -> bool:
+        raw = self._state.get("slice")
+        return cfg.slice.enabled if raw is None else bool(raw)
+
+    def _set_slice(self, payload: dict[str, object]) -> None:
+        with self._lock:
+            self._state["slice"] = bool(payload.get("on"))
+            self._clear_plan()
+            self._save()
+
     def _set_style(self, payload: dict[str, object]) -> None:
         style = str(payload.get("style") or "keep")
         if style not in _STYLES:
@@ -977,10 +991,9 @@ class Desk:
         with self._lock:
             if self.phase == "running":
                 raise DeskError("A job is already running.")
+            self._clear_plan()  # also drops the old plan's staging folder
             self.phase = "running"
             self.message = "Reading the folder…"
-            self._plan = None
-            self._summary = {}
         thread = threading.Thread(target=self._plan_job, args=(screen,), daemon=True)
         thread.start()
 
@@ -1061,19 +1074,30 @@ class Desk:
             mode = self._active_mode()
             tags = self._pair("meta")
             flow = self._flow_for(cfg, source, dest)
+            slicing = self._slicing(cfg)
         if flow.blocked or source is None or dest is None:
             raise DeskError(flow.detail)
         staging = Path(tempfile.mkdtemp(prefix="staging-", dir=self._staging_root()))
         conn = self.connect()
+        kept = False
         try:
             result = scan([source], staging)
             verdicts: dict[int, Verdict] = {}
             if mode == "type":
                 prompts = cfg.clap_prompts if cfg.clap_enabled else {}
+                model = self._model(cfg)
                 verdicts, warnings = annotate(
-                    result.items, conn, prompts, use_clap=cfg.clap_enabled, model=self._model(cfg)
+                    result.items, conn, prompts, use_clap=cfg.clap_enabled, model=model
                 )
                 result.warnings.extend(warnings)
+                if slicing:
+                    with self._lock:
+                        self.message = "Slicing drum hits…"
+                    result.warnings.extend(
+                        slicer.add_slices(
+                            result.items, verdicts, conn, staging, cfg.slice, model=model
+                        )
+                    )
                 router: planner.Router = _rebase_router(
                     planner.sort_router(cfg, verdicts), cfg.root, dest
                 )
@@ -1085,10 +1109,15 @@ class Desk:
             plan = planner.build_plan(result.items, cfg, router, copy_roots, verdicts, conn)
             plan.notes.insert(0, flow.detail)
             plan.notes.extend(result.warnings)
+            # Apply moves files out of staging later, so it must outlive this call.
+            with self._lock:
+                self._plan_staging.append(staging)
+            kept = True
             return plan, kind
         finally:
             conn.close()
-            shutil.rmtree(staging, ignore_errors=True)
+            if not kept:
+                shutil.rmtree(staging, ignore_errors=True)
 
     def _cleanup_plan(self, cfg: Config) -> tuple[planner.Plan, str]:
         flags = self._cleanup()
@@ -1183,6 +1212,9 @@ class Desk:
         return root
 
     def _clear_plan(self) -> None:
+        for folder in self._plan_staging:
+            shutil.rmtree(folder, ignore_errors=True)
+        self._plan_staging = []
         self._plan = None
         self._plan_kind = ""
         self._summary = {}

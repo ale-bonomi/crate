@@ -46,6 +46,7 @@ def _default_loops() -> dict[str, Category]:
         "melodic": Category(folder="Loops/Melodic"),
         "vocal": Category(folder="Loops/Vocals"),
         "fx": Category(folder="Loops/FX & Textures"),
+        "fill": Category(folder="Loops/Drum Fills"),
     }
 
 
@@ -153,6 +154,17 @@ def _default_prompts() -> dict[str, list[str]]:
     }
 
 
+class SliceConfig(BaseModel):
+    """`ingest --slice`: cut drum hits out of loops and chops (see crate.slicer)."""
+
+    enabled: bool = False  # on for every ingest/sort without passing --slice
+    keep_per_kind: int = Field(2, ge=0)  # cleanest N of each kind per file; 0 keeps every hit
+    fills: bool = True  # also save quick runs of hits whole, to Loops/Drum Fills
+    min_drum_share: float = Field(0.15, ge=0, le=1)  # quieter drums than this: not sliced
+    min_source_seconds: float = Field(1.0, ge=0)  # shorter files are already one-shots
+    max_source_seconds: float = Field(300.0, gt=0)  # only the first 5 minutes of a file
+
+
 class Config(BaseModel):
     library_roots: list[Path] = Field(default_factory=lambda: [Path("~/Music/Samples Library")])
     splice_folder: Path = Path("~/Splice/Samples")
@@ -171,6 +183,7 @@ class Config(BaseModel):
     clap_enabled: bool = True
     # Use the model from `crate train` (~/.crate/model.npz) for files whose names say nothing.
     use_trained_model: bool = True
+    slice: SliceConfig = Field(default_factory=SliceConfig)
     project_folders: list[Path] = Field(default_factory=list)
 
     @property
