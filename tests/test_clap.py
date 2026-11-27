@@ -42,3 +42,19 @@ def test_clap_failure_becomes_a_warning(tmp_path: Path, monkeypatch):
     verdicts, warnings = engine.annotate(items, conn, {"kick": ["a kick drum"]}, jobs=1)
     assert any("CLAP scoring failed" in w for w in warnings)
     assert next(iter(verdicts.values())).type == "kick"  # still classified without CLAP
+
+
+def test_clap_fills_gaps_but_never_overrules_a_name():
+    from crate.analyze.fusion import fuse
+    from crate.analyze.metadata import parse
+
+    # folder-only evidence (not explicit), CLAP strongly says something else
+    meta = parse("Phrase_03", ("Vocals",))
+    assert fuse(meta, None, {"fx": 0.9, "vocal": 0.05}, None).type == "vocal"
+    # a "one shot" folder is not overruled by a CLAP loop prompt
+    meta = parse("Weird Sustain 1", ("Bass One Shots", "Atonal"))
+    assert meta.confidence < 0.8  # one folder up: not explicit
+    verdict = fuse(meta, None, {"loop_bass": 0.9, "bass": 0.05}, None)
+    assert verdict.type == "bass" and verdict.loop is False
+    # with no name to go on, CLAP still names the file
+    assert fuse(parse("s0001", ()), None, {"snare": 0.8, "kick": 0.05}, None).type == "snare"

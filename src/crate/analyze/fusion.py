@@ -189,9 +189,10 @@ def fuse(
         elif meta.confidence >= _EXPLICIT:
             chosen, conf = meta.type, 0.85
             reason = f"metadata:{meta.type} over audio:{audio_type}"
-        elif meta.type not in AUDIO_TYPES and not from_clap:
+        elif from_clap or meta.type not in AUDIO_TYPES:
             # The spectrum can't recognise a vocal, an FX or a clap, so its guess is no
-            # evidence against the name. (CLAP can, so a CLAP guess still counts.)
+            # evidence against the name. CLAP can, but measured on a real pack it was
+            # wrong 78% of the times it disagreed with a name, so it only fills gaps.
             chosen, conf = meta.type, meta.confidence
             reason = f"metadata:{meta.type} (audio guessed {audio_type})"
         else:
@@ -208,7 +209,9 @@ def fuse(
     elif audio_loop is not None and meta.loop is None:
         loop = audio_loop
     elif audio_loop is not None and meta.loop is not None and meta.loop != audio_loop:
-        loop = meta.loop if meta.confidence >= _EXPLICIT else audio_loop
+        # A CLAP "loop" prompt winning is no evidence against a "one shot" folder.
+        trust_meta = meta.confidence >= _EXPLICIT or from_clap
+        loop = meta.loop if trust_meta else audio_loop
         conf = min(conf, 0.7)
         reason += f" loop:{'meta' if loop == meta.loop else 'audio'}"
     else:
